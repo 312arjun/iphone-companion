@@ -17,6 +17,35 @@ the services iOS already exposes to a bonded Bluetooth peer.
 - **Dashboard** — a Qt window that collects all of it, or stay out of the way
   in the system tray
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%">
+      <a href="images/overview.png"><img src="images/overview.png" alt="Overview dashboard" width="100%"></a>
+      <br><sub><b>Overview</b> — phone, battery, notifications, media and calls at a glance</sub>
+    </td>
+    <td width="50%">
+      <a href="images/media.png"><img src="images/media.png" alt="Media page with synced lyrics" width="100%"></a>
+      <br><sub><b>Media</b> — now playing, transport, volume and LRCLIB synced lyrics</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="images/calls.png"><img src="images/calls.png" alt="Calls page" width="100%"></a>
+      <br><sub><b>Calls</b> — live call state and history, filterable by type</sub>
+    </td>
+    <td width="50%">
+      <a href="images/device-info.png"><img src="images/device-info.png" alt="Device Info page" width="100%"></a>
+      <br><sub><b>Device Info</b> — what the phone reports over Bluetooth</sub>
+    </td>
+  </tr>
+</table>
+
+Click any image for full size, or browse [`images/`](images/).
+
+*The Bluetooth address and phone numbers in these screenshots are redacted.*
+
 ## How it works
 
 Three services on the phone do the work:
