@@ -32,6 +32,16 @@ the services iOS already exposes to a bonded Bluetooth peer.
   </tr>
   <tr>
     <td width="50%">
+      <a href="images/toasts-stack.png"><img src="images/toasts-stack.png" alt="Four toast variants stacked" width="100%"></a>
+      <br><sub><b>Toasts</b> — incoming call, one-time code, message and missed call, stacked live</sub>
+    </td>
+    <td width="50%">
+      <a href="images/toasts-calls.png"><img src="images/toasts-calls.png" alt="Call banners and a one-time code" width="100%"></a>
+      <br><sub><b>Actions</b> — dial back, answer or decline, and copy a detected code in one click</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
       <a href="images/calls.png"><img src="images/calls.png" alt="Calls page" width="100%"></a>
       <br><sub><b>Calls</b> — live call state and history, filterable by type</sub>
     </td>
@@ -44,7 +54,8 @@ the services iOS already exposes to a bonded Bluetooth peer.
 
 Click any image for full size, or browse [`images/`](images/).
 
-*The Bluetooth address and phone numbers in these screenshots are redacted.*
+*Toasts are from the tray's **Simulate** menu, so no real contacts appear. The
+Bluetooth address and phone numbers in the Overview shot are redacted.*
 
 ## How it works
 
