@@ -1,0 +1,105 @@
+﻿# ============================================================
+#  Master .gitignore  (Arjun / F:\Projects GitHub prep)
+#  Safe default for Python / Node / .NET / ESPHome / hardware
+# ============================================================
+
+# ---- Secrets & credentials (NEVER commit) ----
+.env
+.env.*
+!.env.example
+secrets.yaml
+credentials.json
+sftp.json
+*.pem
+*.ppk
+*.pfx
+*.key
+id_rsa
+id_rsa.*
+*_token
+*token.txt
+snowboy_token
+wit_server_access_token
+nodered_credentials.txt
+putty_auto_login.txt
+remote_sudo_permission.txt
+*emergency_kit*
+*-*-*.json.gcpkey
+# Google Cloud service-account keys (pattern: name-projectnum-keyid.json)
+*serviceaccount*.json
+*service-account*.json
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ---- Node / web ----
+node_modules/
+.pnpm-store/
+.next/
+npm-debug.log*
+yarn-error.log*
+
+# ---- .NET / C++ / Qt ----
+bin/
+obj/
+.vs/
+*.user
+*.suo
+build/
+dist/
+*.gch
+
+# ---- ESPHome / PlatformIO build cache ----
+.esphome/
+.pio/
+.piolibdeps/
+
+# ---- Large binaries / installers / media (host elsewhere) ----
+*.tar
+*.7z
+*.zip
+*.msi
+*.exe
+*.img
+*.psd
+*.mp4
+*.MP4
+*.pkl
+*.pkg
+
+# ---- ancs_notifier runtime ----
+icon_cache/
+config.json
+ancs_notifier.log
+ancs_notifier.log.1
+build_assets/
+probe-*.txt
+*.spec
+
+# written next to the scripts when running from source, and in
+# %LOCALAPPDATA%\ANCSNotifier when frozen. spotify.json holds a refresh token.
+spotify.json
+lyrics.json
+prefs.json
+art/
+dist/
+build/
+doc/
+docs/
+# scratch scripts and their output, never committed
+_*.py
+_*.txt
+_*.png
+
+# ---- OS / editor cruft ----
+.DS_Store
+Thumbs.db
+__MACOSX/
+desktop.ini

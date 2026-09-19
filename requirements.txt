@@ -1,0 +1,5 @@
+bleak>=0.21
+windows-toasts>=1.1
+pillow>=10.0
+pystray>=0.19
+pyside6
