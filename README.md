@@ -6,7 +6,7 @@ Mirrors iPhone notifications, calls and media to a Windows desktop over
 Bluetooth LE. No app on the phone, no cloud account, no MFi hardware — just
 the services iOS already exposes to a bonded Bluetooth peer.
 
-![icon](assets/app_icon.png)
+![icon](images/overview.png)
 
 - **Notifications** — every app, with real artwork, and the action labels iOS
   itself advertises ("Answer", "Decline", "Dial", "End Call")
