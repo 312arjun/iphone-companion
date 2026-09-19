@@ -54,8 +54,7 @@ the services iOS already exposes to a bonded Bluetooth peer.
 
 Click any image for full size, or browse [`images/`](images/).
 
-*Toasts are from the tray's **Simulate** menu, so no real contacts appear. The
-Bluetooth address and phone numbers in the Overview shot are redacted.*
+*Toasts are from the tray's **Simulate** menu.*
 
 ## How it works
 
