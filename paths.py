@@ -16,7 +16,7 @@ import sys
 
 APP_NAME = "ANCSNotifier"
 APP_TITLE = "iPhone Companion"
-APP_VERSION = "1.2.0"          # keep installer.iss MyAppVersion in step
+APP_VERSION = "2.1.0"          # single source of truth; build.py injects it
 FROZEN = bool(getattr(sys, "frozen", False))
 
 
@@ -37,6 +37,7 @@ DATA_DIR = _resolve_data_dir()
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 LOG_PATH = os.path.join(DATA_DIR, "ancs_notifier.log")
 ICON_CACHE = os.path.join(DATA_DIR, "icon_cache")
+FEED_DB = os.path.join(DATA_DIR, "feed.db")
 
 
 def bundled(*parts) -> str:

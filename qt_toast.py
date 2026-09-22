@@ -37,13 +37,14 @@ from PySide6.QtCore import (QEasingCurve, QPoint, QPropertyAnimation,
                             Signal)
 from PySide6.QtGui import (QColor, QFontMetrics, QImage, QPainter,
                            QPainterPath, QPixmap)
-from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect,
-                               QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
+                               QPushButton, QVBoxLayout, QWidget)
 
+import applog
 import calls
 import icons
 import otp
+import prefs
 import theme
 import vicons
 
@@ -71,18 +72,25 @@ COPY_W_MAX = theme.ts(260)
 PHONE_GREEN = "#32D74B"
 DECLINE_RED = "#FF3B30"
 
-# Room for the shadow to fall outside the panel. Small while USE_SHADOW is
-# off, since it is otherwise just transparent padding around every toast.
-USE_SHADOW = False       # see the note in Toast.__init__ before enabling
-SHADOW_BLUR = 28
-SHADOW_DY = 8
-SHADOW_ALPHA = 150
-EDGE_X = 10
-EDGE_TOP = 8
-EDGE_BOTTOM = 16
+# No drop shadow: it read as too heavy against the panel's own border, and
+# these margins are otherwise just transparent padding around every toast, so
+# they are kept small. A shadow was tried and removed on looks, not on
+# technical grounds. If it ever comes back, the approach that worked was
+# concentric rounded rects with a quadratic alpha ramp, painted in the
+# widget's own paintEvent - QGraphicsDropShadowEffect cannot be used here
+# because it renders these frameless translucent windows completely blank.
+EDGE_X = 6
+EDGE_TOP = 5
+EDGE_BOTTOM = 10
+PANEL_RADIUS = theme.ts(28)      # matches QFrame#NotificationToast in theme
 
 MARGIN = 14              # gap from the screen edge
-GAP = 4                  # between stacked toasts (their shadows add space)
+GAP = 8                  # between stacked toasts
+
+# How many lines a notification body may use. Two is the useful maximum: it
+# turns "LOGIN to your Flipkart account using OTP 1526..." into a readable
+# message, while three starts to look like an email preview.
+BODY_MAX_LINES = 2
 
 HOLD_MS = 5400
 HOLD_CALL_MS = 90_000    # a ringing or active call sticks around
@@ -151,17 +159,26 @@ def art_for(bundle_id: str, app: str) -> QPixmap | None:
                        QImage.Format_RGBA8888)
         source = QPixmap.fromImage(image.copy())
 
-        rounded = QPixmap(ICON_BOX, ICON_BOX)
+        # Render at device resolution, then tag the ratio, so the tile is
+        # crisp on a scaled display instead of being drawn at logical size
+        # and stretched by the compositor.
+        ratio = QApplication.primaryScreen().devicePixelRatio() \
+            if QApplication.primaryScreen() else 1.0
+        ratio = max(1.0, float(ratio))
+        edge = int(round(ICON_BOX * ratio))
+        radius = theme.TOAST_ICON_RADIUS * ratio
+
+        rounded = QPixmap(edge, edge)
         rounded.fill(Qt.transparent)
         painter = QPainter(rounded)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         path = QPainterPath()
-        path.addRoundedRect(QRectF(0, 0, ICON_BOX, ICON_BOX),
-                            theme.TOAST_ICON_RADIUS, theme.TOAST_ICON_RADIUS)
+        path.addRoundedRect(QRectF(0, 0, edge, edge), radius, radius)
         painter.setClipPath(path)
-        painter.drawPixmap(0, 0, ICON_BOX, ICON_BOX, source)
+        painter.drawPixmap(0, 0, edge, edge, source)
         painter.end()
+        rounded.setDevicePixelRatio(ratio)
         pixmap = rounded
     except Exception:
         pixmap = None
@@ -393,17 +410,6 @@ class Toast(QWidget):
         }.get(self.kind, self._build_notification)
         builder()
 
-        # QGraphicsDropShadowEffect renders its target through an offscreen
-        # pixmap, and on a frameless WA_TranslucentBackground window that can
-        # come out completely blank - the panel disappears with no error at
-        # all. Off by default for that reason; flip USE_SHADOW to try it.
-        if USE_SHADOW:
-            shadow = QGraphicsDropShadowEffect(self.card)
-            shadow.setBlurRadius(SHADOW_BLUR)
-            shadow.setOffset(0, SHADOW_DY)
-            shadow.setColor(QColor(0, 0, 0, SHADOW_ALPHA))
-            self.card.setGraphicsEffect(shadow)
-
         self.setFixedWidth(TOAST_W + EDGE_X * 2)
         self.adjustSize()
 
@@ -597,6 +603,39 @@ class Toast(QWidget):
         self._copy_timer.start(COPIED_MS)
         self._arm()
 
+    def contextMenuEvent(self, event):
+        """
+        Right-click menu: snooze, and clear on the phone.
+
+        A menu rather than more buttons, because the panel has exactly one
+        action slot and it is already contested between the ANCS action and
+        the one-time-code pill. Calls are excluded - a context menu over a
+        ringing banner invites a misclick on the one notification where a
+        wrong action actually costs something.
+        """
+        if self.is_call:
+            return
+
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        minutes = prefs.get("snooze_minutes") or 10
+        menu.addAction("Snooze %d minutes" % minutes,
+                       lambda: (MANAGER.snooze(self.item), self.dismiss()))
+
+        # The ANCS negative action is "clear it on the phone". iOS only
+        # advertises it for some notifications, so the entry is conditional
+        # rather than always present and sometimes inert.
+        negative = next((a for a in (self.actions or [])
+                         if len(a) > 2 and a[2] == "negative"), None)
+        if negative:
+            label, callback = negative[0], negative[1]
+            menu.addAction("%s on phone" % label,
+                           lambda: (callback(), self.dismiss()))
+
+        menu.addSeparator()
+        menu.addAction("Dismiss", self.dismiss)
+        menu.exec(event.globalPos())
+
     def _main_row(self) -> QHBoxLayout:
         row = QHBoxLayout(self.card)
         row.setContentsMargins(PAD_H, PAD_V, PAD_H, PAD_V)
@@ -625,6 +664,47 @@ class Toast(QWidget):
         widget.setText(metrics.elidedText(text or "", Qt.ElideRight,
                                           available))
         return widget
+
+    def _wrapped(self, name: str, text: str, reserve: int,
+                 max_lines: int = 2):
+        """
+        A label broken across up to `max_lines`, eliding only the last.
+
+        Qt's own word wrap is not used because it makes the panel grow to fit
+        the text, which is exactly what _fitted exists to prevent - a long
+        message would end up taller than the toast beside it. Here the lines
+        are measured and broken by hand, so the count is known before the
+        card height is set and the panel stays a predictable size.
+
+        Returns (label, line_count).
+        """
+        widget = self._label(name, "")
+        widget.ensurePolished()
+        metrics = QFontMetrics(widget.font())
+        available = max(40, TOAST_W - PAD_H * 2 - ICON_BOX - SPACING - reserve)
+
+        words = (text or "").split()
+        lines, current, index = [], "", 0
+        while index < len(words):
+            trial = (current + " " + words[index]).strip()
+            if not current or metrics.horizontalAdvance(trial) <= available:
+                current = trial
+                index += 1
+            elif len(lines) + 1 < max_lines:
+                lines.append(current)
+                current = ""
+            else:
+                break                       # last line: whatever is left elides
+        if current:
+            lines.append(current)
+
+        if index < len(words):              # text remained, so cut the tail
+            remainder = " ".join(words[index:])
+            tail = (lines[-1] + " " + remainder) if lines else remainder
+            lines[-1:] = [metrics.elidedText(tail, Qt.ElideRight, available)]
+
+        widget.setText("\n".join(lines))
+        return widget, max(1, len(lines))
 
     def _side_column(self, time_object: str, action=None) -> QVBoxLayout:
         """
@@ -717,7 +797,6 @@ class Toast(QWidget):
         self.wave.start()
 
     def _build_notification(self) -> None:
-        self.card.setFixedHeight(TOAST_H)
         row = self._main_row()
         row.addWidget(self._app_tile(), 0, Qt.AlignVCenter)
 
@@ -744,9 +823,25 @@ class Toast(QWidget):
         rows = [self._header(app, "NotificationApp", None)]
         if title:
             rows.append(self._fitted("NotificationTitle", title, reserve))
+
+        # The body gets a second line when it needs one, and the panel grows
+        # by exactly that line. Only this variant does so - the call layouts
+        # have no body text, and letting them flex would make a stack of
+        # mixed toasts look ragged.
+        body_lines = 1
         if body:
-            rows.append(self._fitted("NotificationBody", body, reserve))
+            widget, body_lines = self._wrapped("NotificationBody", body,
+                                               reserve, BODY_MAX_LINES)
+            rows.append(widget)
         row.addWidget(self._content(*rows), 1)
+
+        extra = 0
+        if body_lines > 1:
+            probe = self._label("NotificationBody", "")
+            probe.ensurePolished()
+            extra = QFontMetrics(probe.font()).lineSpacing() * (body_lines - 1)
+            probe.deleteLater()
+        self.card.setFixedHeight(TOAST_H + extra)
 
         row.addLayout(self._side_column("NotificationTime", action), 0)
 
@@ -939,9 +1034,46 @@ class ToastManager:
         self.toasts: list[Toast] = []
         self.detached: list[Toast] = []
         self.sink = None
+        self._snoozed: list[QTimer] = []
 
     def set_sink(self, sink) -> None:
         self.sink = sink
+
+    def snooze(self, item: dict, minutes: int | None = None) -> int:
+        """
+        Put a toast away and raise it again later.
+
+        The timers are held in a list rather than fired and forgotten,
+        because a QTimer with no Python reference is garbage collected and
+        silently never fires - the toast would simply never come back.
+
+        The re-raised item is a copy with a fresh `at`, so the banner reads
+        "Just now" rather than showing the original age, and `hold_ms` is
+        cleared so a snoozed call banner does not inherit a 90 second hold.
+        """
+        if minutes is None:
+            minutes = prefs.get("snooze_minutes") or 10
+        minutes = max(1, int(minutes))
+
+        later = dict(item)
+        later["at"] = None                 # filled in when it reappears
+        later.pop("hold_ms", None)
+
+        timer = QTimer()
+        timer.setSingleShot(True)
+
+        def fire():
+            later["at"] = time.time()
+            if timer in self._snoozed:
+                self._snoozed.remove(timer)
+            self.show(later)
+
+        timer.timeout.connect(fire)
+        timer.start(minutes * 60_000)
+        self._snoozed.append(timer)
+        applog.log("snoozed %r for %d minute(s)"
+                   % (item.get("title") or item.get("app"), minutes), "note")
+        return minutes
 
     def apply_opacity(self) -> None:
         """Live-update toasts already on screen when the setting changes."""
@@ -999,6 +1131,31 @@ class ToastManager:
 
     # -- internals -------------------------------------------------------- #
 
+    def _screen(self):
+        """
+        Which monitor toasts appear on.
+
+        "cursor" is the default because on a multi-monitor desk the screen
+        you are looking at is the one the pointer is on, and a banner on the
+        other display is one you will not see. A saved screen name wins when
+        it is still attached; otherwise this falls back rather than putting
+        toasts on a monitor that has been unplugged.
+        """
+        want = prefs.get("toast_screen") or "cursor"
+        screens = QApplication.screens()
+        if want not in ("cursor", "primary"):
+            for screen in screens:
+                if screen.name() == want:
+                    return screen.availableGeometry()
+        if want == "cursor":
+            from PySide6.QtGui import QCursor
+            at = QApplication.screenAt(QCursor.pos())
+            if at is not None:
+                return at.availableGeometry()
+        primary = QApplication.primaryScreen()
+        return (primary.availableGeometry() if primary
+                else screens[0].availableGeometry())
+
     def _slot(self, index: int) -> QPoint:
         """
         Stacked by each toast's own height. Layouts size the panels, so an
@@ -1006,7 +1163,7 @@ class ToastManager:
         overlap them. Widths include the shadow margin, so x is derived from
         the toast rather than a constant.
         """
-        screen = QApplication.primaryScreen().availableGeometry()
+        screen = self._screen()
         y = screen.top() + MARGIN - EDGE_TOP
         for toast in self.toasts[:index]:
             y += toast.height() + GAP

@@ -38,37 +38,117 @@ FONT_CANDIDATES = (
 )
 
 # canvas
-BG = "#0C1016"
-# Matches the app icon's own tile colour, sampled from assets/app_icon.png.
-# Anything else leaves a faint edge where the mark's rounded corners meet the
-# sidebar, because the two darks differ in hue even at the same lightness.
-BG_SIDEBAR = "#0E1823"
-# The brand band at the top of the sidebar. One step lighter than the sidebar
-# on the same blue axis rather than a new hue, so it separates the app
-# identity from the navigation without introducing a second accent colour.
-BG_SIDEBAR_HEADER = "#142333"
-CARD = "#151A22"
-CARD_HOVER = "#1C222C"
-CARD_SUNK = "#11161D"
-BORDER = "#242B36"
-BORDER_SOFT = "#1B212A"
+# --------------------------------------------------------------------------- #
+# palettes
+#
+# Every colour the app uses lives in one of these two dicts and nowhere else.
+# apply_mode() copies the chosen one onto this module's globals, so the rest
+# of the codebase keeps reading theme.TEXT, theme.CARD and so on with no idea
+# a mode exists. That only works because those reads happen at call time,
+# inside functions - a module that did `TEXT = theme.TEXT` at import would
+# freeze the dark value, so nothing does.
+#
+# The light palette is not the dark one inverted. Inverting gives muddy
+# greys and an accent that vibrates against white, so the surfaces are
+# warm-neutral, the borders carry the separation that shadow carries in dark
+# mode, and the accent is darkened for contrast against pale backgrounds.
+# --------------------------------------------------------------------------- #
 
-# text
-TEXT = "#EAEDF2"
-TEXT_DIM = "#8B95A3"
-TEXT_FAINT = "#5C6672"
+DARK = {
+    "BG": "#040F1A",
+    "BG_SIDEBAR": "#061322",
+    "BG_SIDEBAR_HEADER": "#08192B",
+    "CARD": "#0A1A2B",
+    "CARD_HOVER": "#0E2438",
+    "CARD_SUNK": "#071522",
+    "BORDER": "#12304A",
+    "BORDER_SOFT": "#0C2237",
+    "TEXT": "#EAF4FF",
+    "TEXT_DIM": "#8FB0CC",
+    "TEXT_FAINT": "#5B7C99",
+    "ACCENT": "#1B9DF0",
+    "GREEN": "#22E584",
+    "RED": "#FF4D5E",
+    "AMBER": "#FFB84D",
+    "TOAST_BG": "#0A1A2B",
+    "TOAST_BORDER": "#173A58",
+    "TOAST_TEXT": "#EAF4FF",
+    "TOAST_TEXT_DIM": "#8FB0CC",
+    "SWITCH_OFF": "#1C3951",
+}
 
-# accents
-ACCENT = "#0A84FF"
-GREEN = "#30D158"
-RED = "#FF453A"
-AMBER = "#FFB340"
+LIGHT = {
+    "BG": "#FBFDFF",
+    "BG_SIDEBAR": "#F2F8FE",
+    "BG_SIDEBAR_HEADER": "#E6F1FC",
+    "CARD": "#FFFFFF",
+    "CARD_HOVER": "#E8F2FD",
+    "CARD_SUNK": "#F4F8FC",
+    "BORDER": "#D3E3F2",
+    "BORDER_SOFT": "#E4EDF6",
+    "TEXT": "#0A1A2B",
+    "TEXT_DIM": "#4A6377",
+    "TEXT_FAINT": "#7C93A6",
+    "ACCENT": "#0A6FD8",
+    "GREEN": "#12A65A",
+    "RED": "#D93B4A",
+    "AMBER": "#B8730A",
+    "TOAST_BG": "#0A1A2B",
+    "TOAST_BORDER": "#173A58",
+    "TOAST_TEXT": "#EAF4FF",
+    "TOAST_TEXT_DIM": "#8FB0CC",
+    "SWITCH_OFF": "#C3D4E2",
+}
 
+MODE = "dark"
+
+
+def apply_mode(mode: str) -> str:
+    """
+    Switch palette. Returns the mode actually applied.
+
+    Call before sheet(); the stylesheet is built from these globals, so the
+    order matters. Anything other than "light" falls back to dark rather
+    than half-applying an unknown palette.
+    """
+    global MODE
+    MODE = "light" if str(mode).lower() == "light" else "dark"
+    for name, value in (LIGHT if MODE == "light" else DARK).items():
+        globals()[name] = value
+    globals()["ACTION_COLOURS"] = {"positive": globals()["GREEN"],
+                                   "negative": globals()["RED"],
+                                   "neutral": globals()["ACCENT"]}
+    return MODE
+
+
+apply_mode("dark")          # populate the globals at import
+
+# Declared explicitly as well, even though apply_mode() has just set them.
+# Without these, every colour name inside sheet() is invisible to static
+# analysis - pyflakes reported sixty "undefined name" errors and, worse,
+# would no longer catch a real typo like {CARD_HOVR}. Assigning from DARK
+# keeps that check working; apply_mode() overwrites them on a switch.
+BG = DARK["BG"]
+BG_SIDEBAR = DARK["BG_SIDEBAR"]
+BG_SIDEBAR_HEADER = DARK["BG_SIDEBAR_HEADER"]
+CARD = DARK["CARD"]
+CARD_HOVER = DARK["CARD_HOVER"]
+CARD_SUNK = DARK["CARD_SUNK"]
+BORDER = DARK["BORDER"]
+BORDER_SOFT = DARK["BORDER_SOFT"]
+TEXT = DARK["TEXT"]
+TEXT_DIM = DARK["TEXT_DIM"]
+TEXT_FAINT = DARK["TEXT_FAINT"]
+ACCENT = DARK["ACCENT"]
+GREEN = DARK["GREEN"]
+RED = DARK["RED"]
+AMBER = DARK["AMBER"]
+TOAST_BG = DARK["TOAST_BG"]
+TOAST_BORDER = DARK["TOAST_BORDER"]
+TOAST_TEXT = DARK["TOAST_TEXT"]
+TOAST_TEXT_DIM = DARK["TOAST_TEXT_DIM"]
+SWITCH_OFF = DARK["SWITCH_OFF"]
 ACTION_COLOURS = {"positive": GREEN, "negative": RED, "neutral": ACCENT}
-
-# toasts
-TOAST_BG = "#1B2028"
-TOAST_BORDER = "#2C3340"
 
 RADIUS = 16
 RADIUS_SM = 11
@@ -151,10 +231,180 @@ def sheet() -> str:
         border-bottom: 1px solid {BORDER_SOFT};
     }}
     QWidget#sidebarBody {{ background: transparent; }}
+    QFrame#titlebar {{ background: {BG}; border: none; }}
+
+    /* Device Info grid cell. Its own sunk surface and border, which is what
+       separates it from InfoRow's transparent line inside a card. */
+    QFrame#infoTile {{
+        background: {CARD_SUNK};
+        border: 1px solid {BORDER_SOFT};
+        border-radius: 12px;
+    }}
+    QFrame#infoTile:hover {{ border: 1px solid {BORDER}; }}
+    QFrame#infoTileIcon {{
+        background: {CARD_HOVER};
+        border: 1px solid {BORDER_SOFT};
+        border-radius: 10px;
+    }}
+
+    QFrame#activityRow {{
+        background: transparent;
+        border: none;
+        border-radius: 7px;
+    }}
+    QFrame#activityRow:hover {{ background: {CARD_HOVER}; }}
+
+    /* A card's own header icon, bigger and more lit than the grid tiles. */
+    QFrame#sectionIcon {{
+        background: {CARD_HOVER};
+        border: 1px solid {BORDER};
+        border-radius: 11px;
+    }}
+
+    /* Stating a limitation in place. Accent-tinted border rather than
+       amber or red: read-only is a fact about the protocol, not a warning
+       and not an error. */
+    QFrame#infoBanner {{
+        background: {CARD_SUNK};
+        border: 1px solid {BORDER};
+        border-left: 3px solid {ACCENT};
+        border-radius: 12px;
+    }}
+
+    /* The three facts beside the phone on Overview. Sunk like the Device
+       Info grid cells, so the two pages describe the phone the same way. */
+    QFrame#stackRow {{ background: transparent; border: none; }}
+    QFrame#factTile {{
+        background: {CARD_SUNK};
+        border: 1px solid {BORDER_SOFT};
+        border-radius: 11px;
+    }}
+    /* Same surface, but these are clickable, so they respond to the cursor
+       and lift toward the accent on hover. */
+    QFrame#actionTile {{
+        background: {CARD_SUNK};
+        border: 1px solid {BORDER_SOFT};
+        border-radius: 11px;
+    }}
+    QFrame#actionTile:hover {{
+        background: {CARD_HOVER};
+        border: 1px solid {ACCENT};
+    }}
+
+    QFrame#titleBar {{
+        background: {ACCENT};
+        border: none;
+        border-radius: 2px;
+    }}
+    /* The save confirmation. Green-tinted when it worked, red when the
+       write failed - the two must not look alike, or a silent revert on the
+       next start comes as a surprise. */
+    QFrame#saveNotice {{
+        background: {CARD_SUNK};
+        border: 1px solid {GREEN};
+        border-radius: 15px;
+    }}
+    QFrame#saveNotice[failed="true"] {{
+        border: 1px solid {RED};
+    }}
+
+    QFrame#sourceChip {{
+        background: {CARD_HOVER};
+        border: 1px solid {BORDER};
+        border-radius: 12px;
+    }}
+
+    /* Notification and call list rows. */
+    QFrame#feedRow {{ background: transparent; border-radius: 12px; }}
+    QFrame#feedRow:hover {{ background: {CARD_HOVER}; }}
+    QFrame#callRow {{ background: transparent; border-radius: 10px; }}
+    QFrame#callRow:hover {{ background: {CARD_HOVER}; }}
+
+    QPushButton#filterPill {{
+        background: {CARD_SUNK};
+        border: 1px solid {BORDER_SOFT};
+        border-radius: 9px;
+        color: {TEXT_DIM};
+        padding: 0 18px;
+        font-size: 12px;
+    }}
+    QPushButton#filterPill:hover {{
+        background: {CARD_HOVER};
+        color: {TEXT};
+    }}
+    QPushButton#filterPill:checked {{
+        background: {ACCENT};
+        border: 1px solid {ACCENT};
+        color: #FFFFFF;
+        font-weight: 600;
+    }}
+
+    QLabel#silencedTag {{
+        background: transparent;
+        color: {AMBER};
+        border: 1px solid {AMBER};
+        border-radius: 8px;
+        padding: 1px 7px;
+        font-size: 10px;
+        font-weight: 600;
+    }}
     /* The resize grip is a bare child of the window, so without this it
        fills its rect with the canvas colour and reads as a patch over
        whatever it happens to sit on. It stays functional when transparent. */
     QSizeGrip#sizeGrip {{ background: transparent; border: none; }}
+
+    /* Settings > Notification rules, and the Notifications search box. */
+    QLineEdit#searchBox {{
+        background: {CARD_SUNK};
+        border: 1px solid {BORDER};
+        border-radius: 9px;
+        padding: 7px 11px;
+        color: {TEXT};
+        font-size: 13px;
+    }}
+    QLineEdit#searchBox:focus {{ border: 1px solid {ACCENT}; }}
+
+    QListWidget#app_picker, QListWidget#priority_picker,
+    QListWidget#ruleList {{
+        background: {CARD_SUNK};
+        border: 1px solid {BORDER};
+        border-radius: 10px;
+        padding: 4px;
+        color: {TEXT};
+        font-size: 12px;
+        outline: none;
+    }}
+    QListWidget#app_picker::item, QListWidget#priority_picker::item,
+    QListWidget#ruleList::item {{
+        padding: 5px 6px;
+        border-radius: 6px;
+    }}
+    QListWidget#app_picker::item:hover, QListWidget#priority_picker::item:hover,
+    QListWidget#ruleList::item:hover {{ background: {CARD_HOVER}; }}
+    QListWidget#app_picker::item:selected,
+    QListWidget#priority_picker::item:selected,
+    QListWidget#ruleList::item:selected {{
+        background: {CARD_HOVER};
+        color: {TEXT};
+    }}
+
+    QComboBox#pill {{
+        background: {CARD_HOVER};
+        border: 1px solid {BORDER};
+        border-radius: 9px;
+        padding: 5px 10px;
+        color: {TEXT};
+        font-size: 12px;
+    }}
+    QComboBox#pill:hover {{ border: 1px solid {ACCENT}; }}
+    QComboBox#pill::drop-down {{ border: none; width: 18px; }}
+    QComboBox#pill QAbstractItemView {{
+        background: {CARD};
+        border: 1px solid {BORDER};
+        selection-background-color: {ACCENT};
+        color: {TEXT};
+        outline: none;
+    }}
     QFrame#sunk {{
         background: {CARD_SUNK};
         border: 1px solid {BORDER_SOFT};
@@ -200,10 +450,19 @@ def sheet() -> str:
     QPushButton#chrome:hover {{ background: {CARD_HOVER}; }}
     QPushButton#chromeClose:hover {{ background: {RED}; }}
 
+    /* The transport play button. An accent ring over the card rather than
+       a filled white disc: the disc read as the brightest thing on the page
+       and pulled the eye away from the track it was meant to play. */
     QPushButton#round {{
-        background: {TEXT}; border: none; border-radius: 23px;
+        background: transparent;
+        border: 2px solid {ACCENT};
+        border-radius: 27px;
     }}
-    QPushButton#round:hover {{ background: #FFFFFF; }}
+    QPushButton#round:hover {{
+        background: {CARD_HOVER};
+        border: 2px solid {ACCENT};
+    }}
+    QPushButton#round:pressed {{ background: {CARD_SUNK}; }}
 
     QPushButton#link {{
         background: transparent; border: none;
@@ -219,6 +478,37 @@ def sheet() -> str:
         color: {TEXT};
         font-size: 12px;
     }}
+
+    /* The one-time-code capsule on a notification row.
+       Named FeedCopyButton rather than CopyButton because toast_sheet(),
+       which is appended to this sheet, styles CopyButton for a banner-sized
+       pill - a later rule of equal specificity would win and flatten this.
+
+       Fully rounded (radius = half the 24px height) so it reads as an iOS
+       capsule rather than a bordered field, with the digits in the accent
+       colour: the number IS the affordance, so colouring it says "clickable"
+       without adding a second control. */
+    QPushButton#FeedCopyButton {{
+        background: {CARD_SUNK};
+        border: 1px solid {BORDER};
+        border-radius: 12px;
+        padding: 0px 13px;
+        color: {ACCENT};
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.6px;
+    }}
+    QPushButton#FeedCopyButton:hover {{
+        background: {ACCENT};
+        border: 1px solid {ACCENT};
+        color: #FFFFFF;
+    }}
+    QPushButton#FeedCopyButton:pressed {{
+        background: {CARD_HOVER};
+        border: 1px solid {ACCENT};
+        color: {ACCENT};
+    }}
+    QPushButton#FeedCopyButton:focus {{ outline: none; }}
 
     QScrollArea {{ border: none; background: transparent; }}
     QSlider::groove:horizontal {{

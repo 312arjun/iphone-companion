@@ -31,9 +31,9 @@ DIST = os.path.join(BASE, "dist")
 # analysis can miss them.
 OUR_MODULES = (
     "ams", "ancs", "app_ble", "appicon", "applog", "calls", "dashboard",
-    "icons", "lyrics", "notify", "otp", "paths", "prefs", "qt_toast",
-    "shortcuts", "simulate", "spotify", "startup", "status", "store",
-    "theme", "vicons", "widgets",
+    "desktop", "feeddb", "icons", "lyrics", "notify", "otp", "paths",
+    "prefs", "qt_toast", "rules", "shortcuts", "simulate", "singleton",
+    "spotify", "startup", "status", "store", "theme", "vicons", "widgets",
 )
 
 INNO_CANDIDATES = [
@@ -130,6 +130,19 @@ def find_inno() -> str | None:
     return shutil.which("ISCC.exe")
 
 
+def version() -> str:
+    """
+    The version, read from paths.py at build time.
+
+    Imported here rather than at module scope so build.py stays runnable
+    even if the app's imports are broken - preflight() is what reports that,
+    and it should report it clearly instead of failing on an import error.
+    """
+    sys.path.insert(0, BASE)
+    import paths
+    return paths.APP_VERSION
+
+
 def run_inno() -> None:
     iscc = find_inno()
     if not iscc:
@@ -138,8 +151,12 @@ def run_inno() -> None:
         print("or compile installer.iss in the Inno Setup IDE.")
         return
     script = os.path.join(BASE, "installer.iss")
-    print(f"\ninno setup -> {script}\n")
-    result = subprocess.run([iscc, script], cwd=BASE)
+    print(f"\ninno setup -> {script}  (version {version()})\n")
+    # /D overrides the #define in the script, so paths.APP_VERSION is the
+    # only place a version number is maintained. The script keeps its own
+    # #define as a fallback for compiling straight from the Inno IDE.
+    result = subprocess.run([iscc, f"/DMyAppVersion={version()}", script],
+                            cwd=BASE)
     if result.returncode != 0:
         sys.exit(f"Inno Setup failed ({result.returncode})")
     print(f"\nInstaller written to {os.path.join(DIST, 'installer')}")

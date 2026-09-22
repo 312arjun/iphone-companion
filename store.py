@@ -17,7 +17,10 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+
+import feeddb
+import prefs
 
 MAX_FEED = 120
 
@@ -142,18 +145,57 @@ class Item:
     uid: int | None = None
     actions: list = field(default_factory=list)
     style: str | None = None
+    # What rules.py decided: "show" or "silent". Kept on the item so the
+    # Activity log can say *why* something never raised a banner, rather
+    # than the feed looking identical whether a rule fired or not.
+    verdict: str = "show"
 
 
 class _Feed:
+    """
+    Recent notifications, in memory, backed by SQLite.
+
+    The deque stays as the read path because the dashboard refreshes every
+    second and should never touch disk to do it. SQLite is written through
+    on add, and read only once at startup to repopulate the deque.
+
+    count() deliberately remains *this session*, because the Device Info
+    page labels it that way. All-time totals come from feeddb.stored_count().
+    """
+
     def __init__(self):
         self._lock = threading.Lock()
         self.items: deque[Item] = deque(maxlen=MAX_FEED)
         self.total = 0
+        self._loaded = False
+
+    def load(self) -> int:
+        """
+        Repopulate from disk. Call once at startup, before the BLE thread
+        runs, so no lock contention and no risk of interleaving with live
+        notifications arriving.
+        """
+        if self._loaded:
+            return 0
+        self._loaded = True
+        if not prefs.get("save_history"):
+            return 0
+        feeddb.prune()
+        rows = feeddb.load(MAX_FEED)
+        with self._lock:
+            for row in rows:                      # rows are newest-first
+                self.items.append(Item(**row))    # so append preserves order
+        return len(rows)
 
     def add(self, item: Item) -> None:
         with self._lock:
             self.items.appendleft(item)
             self.total += 1
+        # outside the lock: a slow disk must not stall the BLE thread's
+        # notification handling. Checked per-add rather than cached, so
+        # toggling the setting takes effect immediately.
+        if prefs.get("save_history"):
+            feeddb.add(asdict(item))
 
     def recent(self, limit: int = 20) -> list[Item]:
         with self._lock:
@@ -166,6 +208,23 @@ class _Feed:
     def clear(self) -> None:
         with self._lock:
             self.items.clear()
+        feeddb.clear()
+
+    # --- history queries -------------------------------------------------
+    # These read the database directly rather than the deque, because the
+    # deque only holds MAX_FEED items while history runs to KEEP_ROWS.
+
+    def search(self, query: str = "", bundle_id: str = "",
+               limit: int = 200) -> list[Item]:
+        return [Item(**row) for row in
+                feeddb.search(query=query, bundle_id=bundle_id, limit=limit)]
+
+    def apps(self) -> list[dict]:
+        """[{bundle_id, app, count, last}], most recently active first."""
+        return feeddb.apps()
+
+    def stored_count(self) -> int:
+        return feeddb.stored_count()
 
 
 DEVICE = _Device()

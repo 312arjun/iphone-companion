@@ -56,12 +56,14 @@ import ams                                              # noqa: E402
 import app_ble                                          # noqa: E402
 import appicon                                          # noqa: E402
 import notify                                           # noqa: E402
+import prefs                                            # noqa: E402
 import simulate                                         # noqa: E402
+import singleton                                        # noqa: E402
 import spotify                                          # noqa: E402
 import theme                                            # noqa: E402
 from dashboard import Dashboard                         # noqa: E402
 from qt_toast import MANAGER                            # noqa: E402
-from store import DEVICE, MEDIA                         # noqa: E402
+from store import DEVICE, FEED, MEDIA                   # noqa: E402
 
 
 def _tray_pixmap(state: str, plain: bool = False) -> QIcon:
@@ -103,10 +105,19 @@ class Application:
         self.app.setQuitOnLastWindowClosed(False)
         self.app.setApplicationName("iPhone Companion")
         theme.resolve_fonts()          # must precede the stylesheet
+        theme.apply_mode(prefs.get("theme_mode"))   # and so must the palette
         self.app.setStyleSheet(theme.sheet())
 
         window_icon = _tray_pixmap("listening", plain=True)
         self.app.setWindowIcon(window_icon)
+
+        # Before the Dashboard is built, so the Notifications page and the
+        # Recent Notifications card render with history already in place
+        # rather than appearing empty and then filling in.
+        restored = FEED.load()
+        if restored:
+            applog.log("restored %d notification(s) from history" % restored,
+                       "store")
 
         self.bridge = Bridge()
         self.dashboard = Dashboard()
@@ -369,4 +380,15 @@ class Application:
 
 
 if __name__ == "__main__":
+    # Checked before anything else runs. A second instance must not reach
+    # the BLE thread, the feed database or prefs.json - it would fight the
+    # first for the phone's link and overwrite its settings. Raising the
+    # existing window makes a double-clicked shortcut do the useful thing
+    # instead of appearing to do nothing.
+    if not singleton.acquire():
+        applog.log(singleton.already_running_message(), "app")
+        if not singleton.raise_existing():
+            applog.log("the running copy has no window open; it is in the "
+                       "tray", "app")
+        sys.exit(0)
     sys.exit(Application().run())

@@ -10,8 +10,9 @@ registered itself:
   3. windows-toasts - native toast fallback
   4. console only
 
-Every notification is recorded in store.FEED regardless, so the dashboard's
-history is complete even for ones that were never displayed.
+Every notification is recorded in store.FEED unless an explicit keyword rule
+asks for it to be dropped, so the dashboard's history stays complete even
+for ones that never raised a banner. See rules.py for the policy.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 import time
 
 import applog
+import rules
 from status import STATUS
 from store import FEED, Item
 
@@ -86,17 +88,38 @@ def show_notification(app_name: str, title: str, body: str,
     key:     the ANCS uid, so it can be dismissed when the phone clears it.
     """
     headline = title or app_name
+
+    # One choke point for policy: everything reaching a display passes here,
+    # so the rules only have to be applied in one place. See rules.py.
+    verdict = rules.decide(app=app_name, title=headline, body=body or "",
+                           bundle_id=bundle_id or "", style=style)
+    if verdict == rules.DROP:
+        applog.log(f"dropped by rule: {app_name}: {headline}", "note")
+        return
+
     FEED.add(Item(at=time.time(), app=app_name, bundle_id=bundle_id or "",
                   title=headline, body=body or "", category=category,
-                  uid=key, style=style))
+                  uid=key, style=style, verdict=verdict))
     STATUS.note(app_name, headline)
 
+    # Bodies arrive with embedded newlines - a promotional push is often
+    # three lines - so they are flattened and clipped for the log. The full
+    # text is in the feed; the log is for scanning, not archiving.
+    flat = " ".join((body or "").split())
     label = f"{app_name}: {headline}"
-    if body:
-        label += f" - {body}"
+    if flat:
+        label += f" - {flat[:90]}" + ("\u2026" if len(flat) > 90 else "")
     applog.log(label, "note")
 
     if STATUS.paused:
+        return
+
+    # Recorded above, so it is in the feed when the user looks - it just
+    # never raises a banner. Only the headline is repeated here: the line
+    # above already carries the body, and printing it twice turns one
+    # silenced promo into six lines of log.
+    if verdict == rules.SILENT:
+        applog.log(f"silenced by rule: {app_name}: {headline}", "note")
         return
 
     item = {

@@ -8,7 +8,13 @@
 
 #define MyAppName "iPhone Companion"
 #define MyAppShortName "iPhoneCompanion"
-#define MyAppVersion "1.2.0"
+; MyAppVersion is normally injected by build.py (/DMyAppVersion=...) from
+; paths.APP_VERSION, which is the single source of truth. The #define below
+; is only a fallback for compiling this script directly in the Inno IDE, so
+; if the two ever disagree, paths.py is right.
+#ifndef MyAppVersion
+  #define MyAppVersion "2.1.0"
+#endif
 #define MyAppPublisher "Arjun"
 #define MyAppExeName "iPhoneCompanion.exe"
 

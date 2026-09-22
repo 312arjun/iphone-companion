@@ -1,12 +1,12 @@
 # iPhone Companion
 
-**v1.2** · Windows · Python 3.11+ · PySide6
+**v2.1** · Windows · Python 3.11+ · PySide6
 
 Mirrors iPhone notifications, calls and media to a Windows desktop over
 Bluetooth LE. No app on the phone, no cloud account, no MFi hardware — just
 the services iOS already exposes to a bonded Bluetooth peer.
 
-![icon](images/overview.png)
+![icon](images/overview_v2.png)
 
 - **Notifications** — every app, with real artwork, and the action labels iOS
   itself advertises ("Answer", "Decline", "Dial", "End Call")
@@ -22,39 +22,131 @@ the services iOS already exposes to a bonded Bluetooth peer.
 <table>
   <tr>
     <td width="50%">
-      <a href="images/overview.png"><img src="images/overview.png" alt="Overview dashboard" width="100%"></a>
-      <br><sub><b>Overview</b> — phone, battery, notifications, media and calls at a glance</sub>
+      <a href="images/overview_v2.png"><img src="images/overview_v2.png" alt="Overview dashboard" width="100%"></a>
+      <br><sub><b>Overview</b> &mdash; phone, battery, six tiles, notifications, media and calls at a glance</sub>
     </td>
     <td width="50%">
-      <a href="images/media.png"><img src="images/media.png" alt="Media page with synced lyrics" width="100%"></a>
-      <br><sub><b>Media</b> — now playing, transport, volume and LRCLIB synced lyrics</sub>
+      <a href="images/notification_v2.png"><img src="images/notification_v2.png" alt="Notifications page" width="100%"></a>
+      <br><sub><b>Notifications</b> &mdash; searchable history, All / Messages / Calls filters, a colour bar per app</sub>
     </td>
   </tr>
   <tr>
+    <td width="50%">
+      <a href="images/media_v2.png"><img src="images/media_v2.png" alt="Media page" width="100%"></a>
+      <br><sub><b>Media</b> &mdash; now playing, source chip, transport, volume and LRCLIB synced lyrics</sub>
+    </td>
+    <td width="50%">
+      <a href="images/device-info_v2.png"><img src="images/device-info_v2.png" alt="Device Info page" width="100%"></a>
+      <br><sub><b>Device Info</b> &mdash; what the phone reports, and an activity log showing what the rules did</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="images/settings_v2.png"><img src="images/settings_v2.png" alt="Settings page" width="100%"></a>
+      <br><sub><b>Settings</b> &mdash; connection, notification rules, devices, appearance and Spotify</sub>
+    </td>
     <td width="50%">
       <a href="images/toasts-stack.png"><img src="images/toasts-stack.png" alt="Four toast variants stacked" width="100%"></a>
-      <br><sub><b>Toasts</b> — incoming call, one-time code, message and missed call, stacked live</sub>
-    </td>
-    <td width="50%">
-      <a href="images/toasts-calls.png"><img src="images/toasts-calls.png" alt="Call banners and a one-time code" width="100%"></a>
-      <br><sub><b>Actions</b> — dial back, answer or decline, and copy a detected code in one click</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <a href="images/calls.png"><img src="images/calls.png" alt="Calls page" width="100%"></a>
-      <br><sub><b>Calls</b> — live call state and history, filterable by type</sub>
-    </td>
-    <td width="50%">
-      <a href="images/device-info.png"><img src="images/device-info.png" alt="Device Info page" width="100%"></a>
-      <br><sub><b>Device Info</b> — what the phone reports over Bluetooth</sub>
+      <br><sub><b>Toasts</b> &mdash; incoming call, one-time code, message and missed call, stacked live</sub>
     </td>
   </tr>
 </table>
 
 Click any image for full size, or browse [`images/`](images/).
 
-*Toasts are from the tray's **Simulate** menu.*
+*The dashboard shots are from a real phone, so notification text, contact
+names, the Bluetooth address and the Spotify client id are blurred. Toasts
+are from the tray's **Simulate** menu, so no real contact appears in them.*
+
+## What's new in 2.1
+
+A full visual pass over every page, working from mockups rather than
+tweaking in place.
+
+**A new palette.** Deep navy surfaces with a cyan-leaning accent, sampled
+from the mockups instead of being guessed at. Light mode is derived from its
+own mockup rather than inverted from dark, so it is warm-neutral with a
+darker accent that holds contrast against white. Banners stay dark in both.
+
+**Device Info** gains a hero card, a two-column tile grid, and an activity
+log on a timeline. Notifications a rule silenced are dimmed in place and
+tagged, never hidden - the log exists to explain what the rules did, so
+hiding their effects would defeat it. That needed a schema change: each row
+now records the verdict that was applied to it.
+
+**Notifications** gains All / Messages / Calls filters and a per-app colour
+bar down the left of each row, keyed off the bundle id so an app keeps its
+colour between restarts.
+
+**Calls** gains a Current Call card, search that composes with the filters,
+and a decorative waveform. **Messages** states the read-only limitation in
+place, on the page where you would otherwise look for a reply box.
+**Media** gains a source chip naming the player, since the transport acts on
+whatever is playing rather than on a chosen app. **Overview** puts six tiles
+beside the phone - three facts, three actions - and **Settings** moves to two
+columns.
+
+Not built, and deliberately: "Find iPhone" and "Open Camera" appear in the
+mockups but no protocol offers them, so shipping the buttons would have been
+a lie. See *Out of scope* below.
+
+### Fixes this pass turned up
+
+- Label font sizes were ignored app-wide. Setting a stylesheet on a widget
+  makes Qt resolve its font from QSS, where the global `font-size` rule beat
+  `setFont()` - every label had been 13px whatever was asked for.
+- Colours were baked in at construction, so switching theme left much of the
+  dark UI unreadable. Labels now carry a palette role and re-tint.
+- A long notification body set a minimum width that propagated up and pushed
+  the Calls card off the Overview row entirely.
+- An empty allow-list silenced every notification from every app. That is a
+  half-finished setting, not an instruction, and is now treated as off.
+- App badges were rendered at 42px and upscaled, which is what made them
+  look pixelated. Tiles are 128px now, so every consumer scales down.
+
+## What's new in 2.0
+
+**Notification rules.** Settings has a Notification rules card that decides
+what actually raises a banner:
+
+- **App filter** \u2014 silence the apps you pick, or allow only the apps you
+  pick. The list is built from apps this phone has actually sent, so you
+  never type a bundle id.
+- **Priority apps** \u2014 these ignore quiet hours.
+- **Quiet hours** \u2014 a nightly window; handles the overnight wrap.
+- **Word rules** \u2014 plain words, not patterns. "sale" silences anything
+  containing it; first matching rule wins.
+
+Filtered notifications are still recorded, they just do not raise a banner,
+so nothing disappears. **Calls are never filtered** \u2014 no rule, block-list
+entry or quiet window can hide a ringing phone.
+
+**History that survives a restart.** The feed is kept in SQLite
+(`feed.db`), capped at the most recent 10,000 notifications, with a search
+box on the Notifications page that queries the whole store rather than
+what happens to be on screen. Turn it off with **Save notification
+history** in Settings; that stops new writes and leaves existing rows
+alone.
+
+**One-time codes.** A code in an SMS gets a copy button on the banner and
+on the dashboard row. Detection is deliberately conservative: a number only
+counts when an OTP-ish word is near it, and it is rejected when a money or
+reference label sits in front, so a bank balance never lands on your
+clipboard.
+
+**Light theme.** Settings \u203a Appearance \u203a Theme, applied live. Banners
+stay dark in both modes, because they sit over other windows rather than
+over the app.
+
+**Toasts and window.** Right-click a banner to snooze it or clear it on the
+phone. Notification bodies use a second line when they need one. Banners
+follow the screen your cursor is on. The window resizes from all four
+edges and corners.
+
+**Smaller things.** Shuffle and repeat are gone from Media \u2014 AMS advances
+them blind, with no way to read the state back, so the buttons could never
+show what they were doing. App badges render at 128px instead of being
+upscaled from 42. The Settings toggle animates.
 
 ## How it works
 
@@ -288,6 +380,20 @@ requires Spotify Premium; the API returns 403 otherwise.
 
 ## Building
 
+Check it starts first. `smoke.py` builds a real `Application` in both
+themes and renders every page — importing `qt_main` only runs the module
+body, so a missing import inside the constructor passes an import check and
+still fails on launch:
+
+```bat
+python smoke.py dark
+python smoke.py light
+python otp.py
+python rules.py
+```
+
+All four should end in `FAILURES: 0` or `N/N passed`. Then:
+
 ```bat
 python -m pip install pyinstaller
 python build.py --installer
@@ -297,6 +403,13 @@ Produces `dist\iPhoneCompanion\` and, with
 [Inno Setup 6](https://jrsoftware.org/isdl.php), a per-user setup exe in
 `dist\installer\`. No admin rights needed — Bluetooth does not require
 elevation. Expect SmartScreen to flag an unsigned binary on first run.
+
+The version comes from `paths.APP_VERSION` and `build.py` injects it into
+the installer, so that constant is the only place to change it.
+
+A frozen build keeps its data in `%LOCALAPPDATA%\ANCSNotifier\`, separate
+from a source run, so the installed app starts with its own settings and
+history rather than inheriting the ones beside the scripts.
 
 ## Layout
 
@@ -310,13 +423,16 @@ elevation. Expect SmartScreen to flag an unsigned binary on first run.
 | `dashboard.py` | the window and its seven pages |
 | `qt_toast.py` | desktop toasts — four variants, one component |
 | `otp.py` | finds a one-time code in a notification, for the Copy pill |
+| `rules.py` | decides show / silence / discard for every notification |
+| `feeddb.py` | SQLite persistence and search for the feed |
 | `theme.py` | palette, plus the toast QSS and its scale factors |
 | `widgets.py` `vicons.py` | dashboard building blocks, vector icons |
 | `store.py` `status.py` `applog.py` `prefs.py` | shared state, logging, settings |
 | `spotify.py` `lyrics.py` | optional artwork, volume and lyrics |
 | `icons.py` `appicon.py` | app artwork, and the tray/application icon |
-| `startup.py` `shortcuts.py` | run-at-login, and the actions that work |
+| `startup.py` `desktop.py` `shortcuts.py` | run-at-login, desktop shortcut, and the actions that work |
 | `simulate.py` | fake phone events for testing the UI |
+| `smoke.py` | builds a real Application in both themes; run before a release |
 | `probe.py` | GATT dump and raw traffic log |
 | `build.py` `installer.iss` | packaging |
 | `make_icon.py` | regenerates the icon assets — not needed to run or build |
@@ -330,6 +446,12 @@ Everything writable lives in `%LOCALAPPDATA%\ANCSNotifier\` when frozen, or
 beside the scripts from source: `config.json` (cached address), `spotify.json`
 (refresh token — **not** for committing), `prefs.json`, `lyrics.json`,
 `icon_cache\`, `art\`, `ancs_notifier.log`.
+
+
+`feed.db` holds the notification history (SQLite, newest 10,000). Delete it
+to wipe history, or turn off **Save notification history** in Settings to stop
+writing to it. `prefs.json` holds every setting; both live beside the scripts
+when running from source, and in `%LOCALAPPDATA%\ANCSNotifier\` when installed.
 
 ## Notes for anyone extending this
 

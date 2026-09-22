@@ -520,12 +520,30 @@ def _line(x1, y1, x2, y2) -> QPainterPath:
     return path
 
 
+
+def _trash(p, stroke):
+    """Bin: lid, body, and two slats. Drawn rather than a font glyph so it
+    matches the stroke weight of every other icon here."""
+    p.setPen(stroke)
+    p.drawLine(4.5, 6.5, 19.5, 6.5)                 # lid
+    p.drawLine(9.5, 6.5, 9.5, 4.5)                  # handle left
+    p.drawLine(14.5, 6.5, 14.5, 4.5)                # handle right
+    p.drawLine(9.5, 4.5, 14.5, 4.5)                 # handle top
+    path = QPainterPath()                            # body, tapered
+    path.moveTo(6.5, 6.5)
+    path.lineTo(7.5, 19.5)
+    path.lineTo(16.5, 19.5)
+    path.lineTo(17.5, 6.5)
+    p.drawPath(path)
+    p.drawLine(10.5, 9.5, 10.5, 16.5)               # slats
+    p.drawLine(13.5, 9.5, 13.5, 16.5)
+
 DRAW = {
     "home": _home, "music": _music, "bell": _bell, "phone": _phone,
     "phone_missed": _phone_missed,
     "chat": _chat, "device": _device, "settings": _settings,
     "play": _play, "pause": _pause, "next": _next, "previous": _previous,
-    "volume": _volume, "mute": _mute, "shuffle": _shuffle, "repeat": _repeat,
+    "volume": _volume, "mute": _mute, "shuffle": _shuffle, "trash": _trash, "repeat": _repeat,
     "heart": _heart, "bluetooth": _bluetooth, "battery": _battery,
     "clock": _clock, "building": _building, "lock": _lock, "camera": _camera,
     "photos": _photos, "chevron": _chevron, "chevron_down": _chevron_down,

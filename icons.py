@@ -38,8 +38,13 @@ LOOKUP_URL = "https://itunes.apple.com/lookup"
 HTTP_TIMEOUT = 6
 MISS_TTL = 7 * 24 * 3600        # re-try a failed lookup after a week
 
-SIZE = 42                       # tile edge, px
-RADIUS = 11                     # iOS-ish corner radius
+# Tiles are rendered well above every display size and scaled DOWN by the
+# consumer. At the old 42px the toast (theme.TOAST_ICON) was upscaling them,
+# which softened the artwork and left visibly stepped corners - made worse by
+# the tile being rounded twice, once here and again by the toast's clip path.
+# Downscaling with a smooth transform has neither problem.
+SIZE = 128                      # tile edge, px
+RADIUS = round(SIZE * 0.26)     # iOS-ish corner radius, proportional to SIZE
 _FONT_DIR = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
 
 
@@ -56,8 +61,11 @@ def _font(names, size):
     return ImageFont.load_default()
 
 
-_GLYPH_FONT = _font(["segmdl2.ttf", "SegoeIcons.ttf"], 21)
-_MONO_FONT = _font(["seguisb.ttf", "segoeuib.ttf", "arialbd.ttf"], 20)
+# Sized from SIZE so glyphs keep their proportions if the tile size changes
+# again. The ratios are the ones the 42px tiles were tuned with.
+_GLYPH_FONT = _font(["segmdl2.ttf", "SegoeIcons.ttf"], round(SIZE * 0.50))
+_MONO_FONT = _font(["seguisb.ttf", "segoeuib.ttf", "arialbd.ttf"],
+                   round(SIZE * 0.48))
 
 
 # --------------------------------------------------------------------------- #

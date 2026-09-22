@@ -20,19 +20,28 @@ Notifications card instead of appearing as desktop banners.
 
 from __future__ import annotations
 
+import ctypes
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal
+try:                          # Windows only; the app does not run elsewhere,
+    import ctypes.wintypes    # but an import error here must not be fatal
+    _WINTYPES = True
+except (ImportError, ValueError):
+    _WINTYPES = False
+
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QImage, QPixmap
-from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QMainWindow, QPushButton,
-                               QScrollArea, QSizeGrip, QSlider,
-                               QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFrame,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QMainWindow,
+                               QPushButton, QScrollArea, QSizeGrip, QSlider,
+                               QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 import ams
 import appicon
 import applog
 import calls
+import desktop
 import icons
 import lyrics
 import paths
@@ -43,11 +52,17 @@ import startup
 import theme
 import vicons
 from store import DEVICE, FEED, MEDIA, ago
-from widgets import (Artwork, BatteryPill, Card, EmptyState, FeedRow,
-                     FilterTabs, InfoRow, LyricsView, Meter, NavButton,
-                     PageHeader, PhoneMock, SettingRow, ShortcutTile,
-                     Sparkline, StackRow, StatusPill, Switch, TileButton,
-                     ghost_button, icon_label, label)
+from widgets import (ActivityRow, Artwork, BatteryPill, Card,
+                     DecorArt, EmptyState,
+                     FeedRow, FilterTabs, InfoBanner, InfoRow, InfoTile,
+                     LyricsView,
+                     Meter, NavButton, PageHeader, PhoneMock, SectionHeader,
+                     SettingRow,
+                     SaveNotice, SourceChip, Sparkline, StackRow, StatusPill,
+                     Switch,
+                     Waveform,
+                     TileButton, ghost_button, icon_label, label, restyle_images,
+                     restyle_labels)
 
 NAV = [
     ("Overview", "home"),
@@ -113,6 +128,8 @@ class Dashboard(QMainWindow):
         self._toast_rows: list[QFrame] = []
         self._call_filter = "All"
         self._feed_signature = None
+        # Sentinel, so the first refresh always builds the activity rows.
+        self._activity_signature = object()
         self._call_signature = None
 
         shell = QWidget()
@@ -163,6 +180,51 @@ class Dashboard(QMainWindow):
                        self.height() - size.height())
         self.grip.raise_()
 
+    # Windows sends WM_NCHITTEST to ask "what part of the window is this
+    # point?". A frameless window answers HTCLIENT everywhere, which is why
+    # the edges are dead. Answering with the edge codes hands resizing back
+    # to the OS, so it gets the correct cursors, snapping and DPI behaviour
+    # for free rather than reimplementing drag-resize in Python.
+    _WM_NCHITTEST = 0x0084
+    _HT = {                       # (left, top, right, bottom) -> code
+        (True, True, False, False): 13,    # HTTOPLEFT
+        (False, True, True, False): 14,    # HTTOPRIGHT
+        (True, False, False, True): 16,    # HTBOTTOMLEFT
+        (False, False, True, True): 17,    # HTBOTTOMRIGHT
+        (True, False, False, False): 10,   # HTLEFT
+        (False, False, True, False): 11,   # HTRIGHT
+        (False, True, False, False): 12,   # HTTOP
+        (False, False, False, True): 15,   # HTBOTTOM
+    }
+    RESIZE_BORDER = 6             # px of grab area inside each edge
+
+    def nativeEvent(self, event_type, message):
+        if (not _WINTYPES or event_type != "windows_generic_MSG"
+                or self.isMaximized()):
+            return super().nativeEvent(event_type, message)
+        try:
+            msg = ctypes.wintypes.MSG.from_address(int(message))
+        except (TypeError, ValueError):
+            return super().nativeEvent(event_type, message)
+        if msg.message != self._WM_NCHITTEST:
+            return super().nativeEvent(event_type, message)
+
+        # lParam packs screen coords as two signed 16-bit halves; masking
+        # without sign-extending breaks on a monitor left of the primary,
+        # where x is negative.
+        x = ctypes.c_short(msg.lParam & 0xFFFF).value
+        y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+        local = self.mapFromGlobal(QPoint(x, y))
+        border = self.RESIZE_BORDER
+        edges = (local.x() <= border,
+                 local.y() <= border,
+                 local.x() >= self.width() - border,
+                 local.y() >= self.height() - border)
+        code = self._HT.get(edges)
+        if code is not None:
+            return True, code
+        return super().nativeEvent(event_type, message)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._place_grip()
@@ -188,7 +250,10 @@ class Dashboard(QMainWindow):
     def _titlebar(self) -> QWidget:
         bar = QFrame()
         bar.setFixedHeight(48)
-        bar.setStyleSheet(f"background: {theme.BG}; border: none;")
+        # Styled by object name rather than inline, so switching palette
+        # repaints it. An inline setStyleSheet(f"...{theme.BG}") bakes in
+        # whichever mode was active when the window was built.
+        bar.setObjectName("titlebar")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(24, 9, 14, 5)
         layout.setSpacing(10)
@@ -369,11 +434,10 @@ class Dashboard(QMainWindow):
         outer.addLayout(middle, 1)
 
         outer.addWidget(self._card_battery(), 0)
-        outer.addWidget(self._card_shortcuts(), 0)
         return self._scroll(page)
 
     def _card_messages(self) -> Card:
-        card = Card("Messages")
+        card = Card("Messages", image="message")
         card.body.setContentsMargins(18, 16, 18, 14)
         card.header.addWidget(self._link("See All", PAGE_MESSAGES))
         self.messages_dash_box = QVBoxLayout()
@@ -384,36 +448,6 @@ class Dashboard(QMainWindow):
             "WhatsApp and Messages land here.")
         card.body.addWidget(self.messages_dash_empty)
         card.body.addStretch(1)
-        return card
-
-    def _card_shortcuts(self) -> Card:
-        """
-        Only actions that genuinely work. Locking the iPhone is not one of
-        them - see shortcuts.PHONE_LOCK_REASON - so it is shown disabled with
-        an explanation rather than as a button that silently does nothing.
-        """
-        card = Card("Shortcuts")
-        card.body.setContentsMargins(18, 16, 18, 14)
-        grid = QGridLayout()
-        grid.setSpacing(11)
-
-        entries = (
-            ("lock", "Lock PC", theme.ACCENT, shortcuts.lock_pc, True),
-            ("bluetooth", "Bluetooth", "#3A4250",
-             shortcuts.open_bluetooth_settings, True),
-            ("signal", "Reconnect", theme.GREEN, self._reconnect, True),
-            ("device", "Lock iPhone", "#3A4250", None, False),
-        )
-        for index, (glyph, caption, colour, action, enabled) in enumerate(entries):
-            tile = ShortcutTile(glyph, caption, colour)
-            tile.setMinimumHeight(96)
-            if enabled and action is not None:
-                tile.clicked.connect(lambda _c, fn=action: fn())
-            else:
-                tile.setEnabled(False)
-                tile.setToolTip(shortcuts.PHONE_LOCK_REASON)
-            grid.addWidget(tile, 0, index)
-        card.body.addLayout(grid)
         return card
 
     def _reconnect(self) -> None:
@@ -432,9 +466,18 @@ class Dashboard(QMainWindow):
         details = QVBoxLayout()
         details.setSpacing(2)
         details.setContentsMargins(0, 4, 0, 0)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(12)
         self.device_title = label("iPhone", 23, QFont.DemiBold)
+        title_row.addWidget(self.device_title, 0, Qt.AlignVCenter)
+        # Its own pill beside the name, as the mockup has it. The titlebar
+        # pill is still there, but on this card the state belongs next to
+        # the device it describes.
+        self.hero_pill_state = StatusPill()
+        title_row.addWidget(self.hero_pill_state, 0, Qt.AlignVCenter)
+        title_row.addStretch(1)
+        details.addLayout(title_row)
         self.device_sub = label("", 12, QFont.Normal, theme.TEXT_DIM)
-        details.addWidget(self.device_title)
         details.addWidget(self.device_sub)
         details.addSpacing(14)
 
@@ -454,14 +497,59 @@ class Dashboard(QMainWindow):
         details.addLayout(battery_row)
         details.addSpacing(14)
 
+        # Six tiles in a 3x2 grid: the three facts about the phone on top,
+        # the three actions that actually work beneath. The Shortcuts card
+        # that used to hold them is gone - the actions belong next to the
+        # device they act on, and the hero had dead space below the facts.
+        #
+        # "Lock iPhone" is dropped rather than shown disabled. A button that
+        # explains why it cannot work is still a button that cannot work,
+        # and it was the only greyed tile on the page.
+        facts = QGridLayout()
+        facts.setHorizontalSpacing(10)
+        facts.setVerticalSpacing(10)
         self.hero_rows = {
             "manufacturer": StackRow("apple", "\u2014", "Manufacturer"),
             "model": StackRow("device", "\u2014", "Model"),
             "bluetooth": StackRow("bluetooth", "\u2014", "", theme.ACCENT),
         }
-        for stack in self.hero_rows.values():
-            details.addWidget(stack)
-        details.addStretch(1)
+        for index, stack in enumerate(self.hero_rows.values()):
+            stack.setObjectName("factTile")
+            stack.setMinimumHeight(58)
+            stack.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            facts.addWidget(stack, 0, index)
+
+        actions = (
+            ("lock", "Lock PC", "Lock this computer", theme.ACCENT,
+             shortcuts.lock_pc),
+            ("bluetooth", "Bluetooth", "Windows settings", theme.ACCENT,
+             shortcuts.open_bluetooth_settings),
+            ("signal", "Reconnect", "Re-establish the link", theme.GREEN,
+             self._reconnect),
+        )
+        for index, (glyph, title, caption, colour, action) in enumerate(actions):
+            tile = StackRow(glyph, title, caption, colour)
+            tile.setObjectName("actionTile")
+            tile.setMinimumHeight(58)
+            tile.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            tile.setCursor(Qt.PointingHandCursor)
+            # StackRow is a QFrame, so it has no clicked signal - the press
+            # is taken on mouseReleaseEvent instead of wrapping every tile
+            # in a button and restyling it back to look like a tile.
+            tile.mouseReleaseEvent = (
+                lambda _e, fn=action: fn())
+            facts.addWidget(tile, 1, index)
+
+        for column in range(3):
+            facts.setColumnStretch(column, 1)
+        # Both rows stretch and the tiles expand vertically, so the six of
+        # them fill the card down to the bottom of the phone render instead
+        # of sitting in a band with dead space beneath. The old
+        # details.addStretch() is gone - it was what created that gap by
+        # absorbing all the spare height itself.
+        facts.setRowStretch(0, 1)
+        facts.setRowStretch(1, 1)
+        details.addLayout(facts, 1)
         row.addLayout(details, 1)
         card.body.addLayout(row)
         return card
@@ -472,7 +560,7 @@ class Dashboard(QMainWindow):
         dropped because Spotify never advertised them in the AMS command list,
         so they were decoration. Volume lives here now.
         """
-        card = Card("Now Playing")
+        card = Card("Now Playing", image="wave-sound")
         card.body.setContentsMargins(18, 16, 18, 16)
         card.header.addWidget(self._link("See All", PAGE_MEDIA))
 
@@ -518,8 +606,11 @@ class Dashboard(QMainWindow):
 
         self.np_play = QPushButton()
         self.np_play.setObjectName("round")
-        self.np_play.setIcon(vicons.icon("play", 22, theme.BG))
-        self.np_play.setFixedSize(52, 52)
+        self.np_play.setIcon(vicons.icon("play", 22, theme.ACCENT))
+        # 54, matching the Media page: theme.py rounds #round with a
+        # 27px radius, and a radius over half the widget makes Qt
+        # draw a square instead of a circle.
+        self.np_play.setFixedSize(54, 54)
         self.np_play.setCursor(Qt.PointingHandCursor)
         self.np_play.clicked.connect(
             lambda: self.media_command.emit(ams.CMD_TOGGLE))
@@ -545,7 +636,7 @@ class Dashboard(QMainWindow):
 
     def _card_feed(self) -> Card:
         """Recent notifications, with live arrivals pinned above them."""
-        card = Card("Recent Notifications")
+        card = Card("Recent Notifications", image="notification-bell")
         card.body.setContentsMargins(18, 16, 18, 14)
         card.header.addWidget(self._link("View All", PAGE_NOTIFICATIONS))
 
@@ -563,7 +654,7 @@ class Dashboard(QMainWindow):
         return card
 
     def _card_calls_summary(self) -> Card:
-        card = Card("Calls")
+        card = Card("Calls", image="phone-call")
         card.body.setContentsMargins(18, 16, 18, 14)
         card.header.addWidget(self._link("See All", PAGE_CALLS))
         self.calls_summary_box = QVBoxLayout()
@@ -576,7 +667,7 @@ class Dashboard(QMainWindow):
         return card
 
     def _card_battery(self) -> Card:
-        card = Card("Battery")
+        card = Card("Battery History", image="usage-history")
         card.body.setContentsMargins(18, 16, 18, 14)
         row = QHBoxLayout()
         row.setSpacing(16)
@@ -614,7 +705,7 @@ class Dashboard(QMainWindow):
         layout.addWidget(PageHeader(
             "Media", "Control music and media playback on your iPhone"))
 
-        playing = Card("Now Playing")
+        playing = Card("Now Playing", bar=True)
         row = QHBoxLayout()
         row.setSpacing(18)
         self.media_art = Artwork(108, 0.16)
@@ -627,8 +718,17 @@ class Dashboard(QMainWindow):
         self.media_album = label("", 11, QFont.Normal, theme.TEXT_FAINT)
         for widget in (self.media_title, self.media_artist, self.media_album):
             column.addWidget(widget)
+        # AMS reports the player name, so the chip is real information, not a
+        # guess. It matters because the transport acts on whatever is
+        # playing rather than on a chosen app.
+        self.media_source = SourceChip()
+        column.addWidget(self.media_source, 0, Qt.AlignLeft)
         column.addStretch(1)
         row.addLayout(column, 1)
+        # Decorative, and only while something is playing - see the Waveform
+        # docstring. There is no audio stream over BLE to measure.
+        self.media_wave = Waveform(300, 72)
+        row.addWidget(self.media_wave, 0, Qt.AlignVCenter)
         playing.body.addLayout(row)
 
         self.media_meter = Meter(6, theme.ACCENT)
@@ -644,26 +744,28 @@ class Dashboard(QMainWindow):
         transport = QHBoxLayout()
         transport.setSpacing(10)
         transport.addStretch(1)
-        for glyph, command in (("shuffle", ams.CMD_ADVANCE_SHUFFLE),
-                               ("previous", ams.CMD_PREVIOUS)):
-            button = ghost_button(glyph, 21, theme.TEXT, 44)
-            button.clicked.connect(
-                lambda _c, cmd=command: self.media_command.emit(cmd))
-            transport.addWidget(button)
+        # Previous / play / next only. Shuffle and repeat were removed
+        # deliberately: AMS advances them blind, with no way to read back
+        # the resulting state, so the buttons could never show whether
+        # shuffle was on. A control that cannot report its own state is
+        # worse than no control.
+        previous = ghost_button("previous", 21, theme.TEXT, 44)
+        previous.clicked.connect(
+            lambda: self.media_command.emit(ams.CMD_PREVIOUS))
+        transport.addWidget(previous)
+
         self.media_play = QPushButton()
         self.media_play.setObjectName("round")
-        self.media_play.setIcon(vicons.icon("play", 22, theme.BG))
+        self.media_play.setIcon(vicons.icon("play", 22, theme.ACCENT))
         self.media_play.setFixedSize(54, 54)
         self.media_play.setCursor(Qt.PointingHandCursor)
         self.media_play.clicked.connect(
             lambda: self.media_command.emit(ams.CMD_TOGGLE))
         transport.addWidget(self.media_play)
-        for glyph, command in (("next", ams.CMD_NEXT),
-                               ("repeat", ams.CMD_ADVANCE_REPEAT)):
-            button = ghost_button(glyph, 21, theme.TEXT, 44)
-            button.clicked.connect(
-                lambda _c, cmd=command: self.media_command.emit(cmd))
-            transport.addWidget(button)
+
+        nxt = ghost_button("next", 21, theme.TEXT, 44)
+        nxt.clicked.connect(lambda: self.media_command.emit(ams.CMD_NEXT))
+        transport.addWidget(nxt)
         transport.addStretch(1)
         playing.body.addLayout(transport)
 
@@ -671,7 +773,7 @@ class Dashboard(QMainWindow):
             "output", "Output", "iPhone - audio stays on the phone over BLE"))
         layout.addWidget(playing)
 
-        volume = Card("Volume")
+        volume = Card("Volume", bar=True)
         self.volume_meter = Meter(7, theme.ACCENT)
         volume.body.addWidget(self.volume_meter)
         self.volume_text = label("\u2014", 12, QFont.Normal, theme.TEXT_DIM)
@@ -692,7 +794,7 @@ class Dashboard(QMainWindow):
         volume.body.addLayout(buttons)
         layout.addWidget(volume)
 
-        words = Card("Lyrics")
+        words = Card("Lyrics", bar=True)
         self.lyrics_source = label("", 11, QFont.Normal, theme.TEXT_FAINT)
         words.header.addWidget(self.lyrics_source)
         self.lyrics_view = LyricsView()
@@ -715,12 +817,32 @@ class Dashboard(QMainWindow):
         head.addWidget(PageHeader("Notifications",
                                   "View iPhone notifications in real time"))
         head.addStretch(1)
-        clear = QPushButton("Clear list")
+        clear = QPushButton("  Clear All")
         clear.setObjectName("pill")
         clear.setCursor(Qt.PointingHandCursor)
+        clear.setIcon(vicons.icon("trash", 15, theme.TEXT_DIM))
         clear.clicked.connect(self._clear_feed)
         head.addWidget(clear, 0, Qt.AlignBottom)
         layout.addLayout(head)
+
+        # Search runs against the database, not the 120-item deque, so it
+        # reaches the whole retained history rather than just what is on
+        # screen. An empty box falls back to the live feed.
+        self.search_box = QLineEdit()
+        self.search_box.setObjectName("searchBox")
+        self.search_box.setPlaceholderText("Search notifications\u2026")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.textChanged.connect(self._on_search)
+        layout.addWidget(self.search_box)
+
+        # All / Messages / Calls, rather than the mockup's Apps/Social/
+        # Shopping. Those would need a bundle-to-category table invented and
+        # maintained by hand as apps are installed; these three map to data
+        # the phone already gives us - MESSAGE_APPS and the call style.
+        self.notif_filter = "All"
+        tabs = FilterTabs(["All", "Messages", "Calls"])
+        tabs.changed.connect(self._set_notif_filter)
+        layout.addWidget(tabs)
 
         card = Card()
         self.all_box = QVBoxLayout()
@@ -733,6 +855,21 @@ class Dashboard(QMainWindow):
         layout.addWidget(card, 1)
         return self._scroll(page)
 
+    def _set_notif_filter(self, name: str) -> None:
+        self.notif_filter = name
+        self._fill_all_list()
+
+    @staticmethod
+    def _matches_notif_filter(item, name: str) -> bool:
+        if name == "Messages":
+            return item.bundle_id in MESSAGE_APPS
+        if name == "Calls":
+            # style is set for call toasts; category covers the ANCS values
+            # for rows restored from history, where style may be absent.
+            return (item.style == "call"
+                    or "call" in (item.category or "").lower())
+        return True
+
     def _page_calls(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -741,7 +878,7 @@ class Dashboard(QMainWindow):
         layout.addWidget(PageHeader("Calls",
                                     "View recent calls from your iPhone"))
 
-        current = Card("Current Call")
+        current = Card()
         row = QHBoxLayout()
         row.setSpacing(18)
         self.call_art = Artwork(60, 0.5)
@@ -749,19 +886,37 @@ class Dashboard(QMainWindow):
         column = QVBoxLayout()
         column.setSpacing(2)
         self.call_who = label("No active call", 18, QFont.DemiBold)
+        # Doubles as the explanatory note when idle and as live call state
+        # when one is running. A SectionHeader above this said the same
+        # thing twice, which is why there isn't one.
         self.call_state = label("Calls appear here while they are running",
                                 12, QFont.Normal, theme.TEXT_DIM)
         column.addWidget(self.call_who)
         column.addWidget(self.call_state)
         row.addLayout(column, 1)
+        # Decorative only - see the Waveform docstring. There is no audio
+        # stream over BLE to measure.
+        self.call_wave = Waveform(240, 54)
+        row.addWidget(self.call_wave, 0, Qt.AlignVCenter)
         self.call_timer = label("", 32, QFont.Light, theme.GREEN)
         row.addWidget(self.call_timer, 0, Qt.AlignVCenter)
+        row.addWidget(DecorArt("phone", 150, 104), 0, Qt.AlignVCenter)
         current.body.addLayout(row)
         layout.addWidget(current)
 
+        filters = QHBoxLayout()
+        filters.setSpacing(12)
         self.call_tabs = FilterTabs(["All", "Missed", "Incoming", "Outgoing"])
         self.call_tabs.changed.connect(self._set_call_filter)
-        layout.addWidget(self.call_tabs)
+        filters.addWidget(self.call_tabs, 1)
+        self.call_search = QLineEdit()
+        self.call_search.setObjectName("searchBox")
+        self.call_search.setPlaceholderText("Search calls\u2026")
+        self.call_search.setClearButtonEnabled(True)
+        self.call_search.setFixedWidth(280)
+        self.call_search.textChanged.connect(self._on_call_search)
+        filters.addWidget(self.call_search, 0)
+        layout.addLayout(filters)
 
         history = Card()
         self.calls_box = QVBoxLayout()
@@ -779,23 +934,46 @@ class Dashboard(QMainWindow):
         self._call_signature = None          # force a rebuild
         self.refresh()
 
+    def _on_call_search(self, _text: str = "") -> None:
+        self._call_signature = None
+        self.refresh()
+
+    def _matches_call_search(self, call) -> bool:
+        query = ""
+        if getattr(self, "call_search", None) is not None:
+            query = (self.call_search.text() or "").strip().lower()
+        if not query:
+            return True
+        # Name and number both, because a call from an unknown number has no
+        # name to match and searching a number is the obvious thing to try.
+        return query in (call.label() or "").lower()
+
     def _page_messages(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(26, 0, 26, 24)
         layout.setSpacing(16)
-        layout.addWidget(PageHeader("Messages",
-                                    "Message notifications from your iPhone"))
+        head = QHBoxLayout()
+        head.addWidget(PageHeader("Messages",
+                                  "Message notifications from your iPhone"))
+        head.addStretch(1)
+        self.msg_search = QLineEdit()
+        self.msg_search.setObjectName("searchBox")
+        self.msg_search.setPlaceholderText("Search messages\u2026")
+        self.msg_search.setClearButtonEnabled(True)
+        self.msg_search.setFixedWidth(300)
+        self.msg_search.textChanged.connect(self._on_msg_search)
+        head.addWidget(self.msg_search, 0, Qt.AlignBottom)
+        layout.addLayout(head)
 
-        note = Card()
-        line = label(
-            "ANCS is read-only: the phone pushes notifications but accepts no "
-            "replies, so messages can be read here and not sent. Sending would "
-            "need iAP2, which requires an Apple MFi chip.",
-            12, QFont.Normal, theme.TEXT_DIM)
-        line.setWordWrap(True)
-        note.body.addWidget(line)
-        layout.addWidget(note)
+        # Stated on the page where someone would otherwise go hunting for a
+        # reply box, rather than buried in the README.
+        layout.addWidget(InfoBanner(
+            "info",
+            "Messages are read-only. The phone pushes notifications but "
+            "accepts no replies, so messages can be read here and not sent.",
+            "Sending would need iAP2, which requires an Apple MFi chip.",
+            decor="messages"))
 
         card = Card()
         self.messages_box = QVBoxLayout()
@@ -809,6 +987,21 @@ class Dashboard(QMainWindow):
         layout.addWidget(card, 1)
         return self._scroll(page)
 
+    def _on_msg_search(self, _text: str = "") -> None:
+        self._feed_signature = None          # force the list to rebuild
+        self._refresh_lists()
+
+    def _matches_msg_search(self, item) -> bool:
+        query = ""
+        if getattr(self, "msg_search", None) is not None:
+            query = (self.msg_search.text() or "").strip().lower()
+        if not query:
+            return True
+        # Sender and body both: you search for either who sent it or what
+        # it said, and there is no way to know which the user meant.
+        return (query in (item.title or "").lower()
+                or query in (item.body or "").lower())
+
     # ------------------------------------------------------------------ #
     # device / settings
     # ------------------------------------------------------------------ #
@@ -821,65 +1014,167 @@ class Dashboard(QMainWindow):
         layout.addWidget(PageHeader("Device Info",
                                     "What the phone reports over Bluetooth"))
 
-        card = Card("Device")
-        self.device_rows = {
-            "name": InfoRow("device", "Device Name"),
-            "model": InfoRow("device", "Model"),
-            "manufacturer": InfoRow("apple", "Manufacturer"),
-            "address": InfoRow("bluetooth", "Bluetooth Address"),
-            "battery": InfoRow("battery", "Battery Level"),
-            "state": InfoRow("signal", "Connection"),
-            "seen": InfoRow("clock", "Last Seen"),
-            "count": InfoRow("bell", "Notifications this session"),
-        }
-        for row in self.device_rows.values():
-            card.body.addWidget(row)
-        layout.addWidget(card)
+        # --- hero: phone render, name, and the info grid beside it ------ #
+        hero = Card()
+        top = QHBoxLayout()
+        top.setSpacing(22)
+        # Its own instance, not the Overview one - a QWidget can only have
+        # one parent, so sharing it would move it off the Overview page.
+        self.device_phone = PhoneMock()
+        top.addWidget(self.device_phone, 0, Qt.AlignTop)
 
-        activity = Card("Activity")
-        self.log_label = QLabel("")
-        self.log_label.setFont(QFont("Consolas", 9))
-        self.log_label.setStyleSheet(f"color: {theme.TEXT_DIM};")
-        self.log_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        activity.body.addWidget(self.log_label)
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        title_row = QHBoxLayout()
+        # Matches the mockup: the device name is the hero of this card,
+        # so it outranks the card and tile text around it.
+        self.device_title = label("iPhone", 26, QFont.Bold)
+        title_row.addWidget(self.device_title, 0, Qt.AlignVCenter)
+        title_row.addStretch(1)
+        self.device_seen = label("", 11, QFont.Normal, theme.TEXT_FAINT)
+        title_row.addWidget(self.device_seen, 0, Qt.AlignVCenter)
+        right.addLayout(title_row)
+        self.device_model = label("", 12, QFont.Normal, theme.TEXT_DIM)
+        right.addWidget(self.device_model)
+
+        # Two columns, as the mockup has it. A grid rather than two nested
+        # VBoxes so the rows stay aligned across columns when one value
+        # wraps or an icon is a different size.
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
+        self.device_rows = {
+            "name": InfoTile("device", "Device Name"),
+            "model": InfoTile("device", "Model"),
+            "manufacturer": InfoTile("apple", "Manufacturer"),
+            "address": InfoTile("bluetooth", "Bluetooth Address"),
+            "battery": InfoTile("battery", "Battery Level", glyph_colour=theme.GREEN),
+            "state": InfoTile("signal", "Connection", glyph_colour=theme.GREEN),
+            "seen": InfoTile("clock", "Last Seen"),
+            "count": InfoTile("bell", "Notifications this session",
+                              glyph_colour=theme.AMBER),
+        }
+        order = ["name", "model", "manufacturer", "address",
+                 "battery", "state", "seen", "count"]
+        for index, key in enumerate(order):
+            grid.addWidget(self.device_rows[key], index % 4, index // 4)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        right.addLayout(grid)
+        top.addLayout(right, 1)
+        hero.body.addLayout(top)
+        layout.addWidget(hero)
+
+        # --- activity log ----------------------------------------------- #
+        activity = Card()
+        clear = QPushButton("  Clear")
+        clear.setObjectName("pill")
+        clear.setCursor(Qt.PointingHandCursor)
+        clear.setIcon(vicons.icon("trash", 15, theme.TEXT_DIM))
+        clear.setToolTip("Clear notification history")
+        clear.clicked.connect(self._clear_feed)
+        activity.body.addWidget(SectionHeader(
+            "info", "Activity",
+            "Live log from your iPhone over Bluetooth. Silenced entries are "
+            "dimmed, not hidden.", clear))
+        self.activity_box = QVBoxLayout()
+        self.activity_box.setSpacing(0)
+        activity.body.addLayout(self.activity_box)
+        self.activity_empty = EmptyState(
+            "bell", "Nothing yet", "Notifications appear here as they arrive.")
+        activity.body.addWidget(self.activity_empty)
+        activity.body.addStretch(1)
         layout.addWidget(activity, 1)
         return self._scroll(page)
+
+    def _fill_activity(self) -> None:
+        """Newest first, capped: the log is for glancing, not scrolling."""
+        items = FEED.recent(40)[:18]
+        self.activity_empty.setVisible(not items)
+        while self.activity_box.count():
+            old = self.activity_box.takeAt(0).widget()
+            if old is not None:
+                old.deleteLater()
+        for index, item in enumerate(items):
+            self.activity_box.addWidget(ActivityRow(
+                item, _pixmap_for(item.bundle_id, item.app),
+                first=index == 0, last=index == len(items) - 1))
 
     def _page_settings(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(26, 0, 26, 24)
         layout.setSpacing(16)
-        layout.addWidget(PageHeader(
+        head = QHBoxLayout()
+        head.addWidget(PageHeader(
             "Settings", "Customize your iPhone Connect experience"))
+        head.addStretch(1)
+        # Where the mockup put a Save Changes button. Settings apply
+        # instantly, so the space is better spent confirming the write than
+        # asking for it.
+        self.save_notice = SaveNotice()
+        head.addWidget(self.save_notice, 0, Qt.AlignBottom)
+        layout.addLayout(head)
 
-        connection = Card("Connection")
+        connection = Card("Connection", "bluetooth")
         self.switch_startup = Switch()
         self.switch_startup.setChecked(startup.is_enabled())
         self.switch_startup.toggled.connect(self._toggle_startup)
         connection.body.addWidget(SettingRow(
             "check", "Start with Windows",
             "Launch automatically when you sign in", self.switch_startup))
+
+        self.switch_desktop = Switch()
+        self.switch_desktop.setChecked(desktop.exists())
+        self.switch_desktop.toggled.connect(self._toggle_desktop)
+        self.desktop_row = SettingRow(
+            "device", "Desktop shortcut",
+            "Put a shortcut to this app on your desktop",
+            self.switch_desktop)
+        connection.body.addWidget(self.desktop_row)
+
         connection.body.addWidget(SettingRow(
             "bluetooth", "Paired device",
             "Pairing is managed in Windows Bluetooth settings",
             label("Windows", 12, QFont.DemiBold, theme.TEXT_DIM)))
-        layout.addWidget(connection)
 
-        notifications = Card("Notifications")
+        notifications = Card("Notifications", image="notification-bell")
         self.switch_banners = Switch()
         self.switch_banners.setChecked(True)
         self.switch_banners.toggled.connect(self._toggle_banners)
         notifications.body.addWidget(SettingRow(
             "bell", "Show notifications from iPhone",
             "Desktop banners when this window is closed", self.switch_banners))
-        layout.addWidget(notifications)
 
-        layout.addWidget(self._card_devices())
-        layout.addWidget(self._card_appearance())
-        layout.addWidget(self._card_spotify())
+        # Connection and Notifications share the first row.
+        first = QHBoxLayout()
+        first.setSpacing(16)
+        first.addWidget(connection, 1)
+        first.addWidget(notifications, 1)
+        layout.addLayout(first)
 
-        about = Card("About")
+        # Two columns, as the mockup has it. Settings had grown to seven
+        # stacked cards, which meant scrolling past Connection every time to
+        # reach Spotify. Paired left-to-right by weight so the columns end
+        # up roughly level: the tall Notification rules card sits opposite
+        # the three short ones.
+        columns = QHBoxLayout()
+        columns.setSpacing(16)
+        left = QVBoxLayout()
+        left.setSpacing(16)
+        right = QVBoxLayout()
+        right.setSpacing(16)
+        left.addWidget(self._card_rules())
+        right.addWidget(self._card_devices())
+        right.addWidget(self._card_appearance())
+        right.addWidget(self._card_spotify())
+        left.addStretch(1)
+        right.addStretch(1)
+        columns.addLayout(left, 1)
+        columns.addLayout(right, 1)
+        layout.addLayout(columns)
+
+        about = Card("About", "info")
         self.about_rows = {
             "version": InfoRow("info", "App version", paths.APP_VERSION),
             "bluetooth": InfoRow("bluetooth", "Bluetooth", "Built-in (Windows)"),
@@ -891,6 +1186,259 @@ class Dashboard(QMainWindow):
         layout.addStretch(1)
         return self._scroll(page)
 
+    def _card_rules(self) -> Card:
+        """
+        Which notifications get through, and when.
+
+        The engine lives in rules.py; this only reads and writes prefs. App
+        pickers are built from FEED.apps(), the bundles actually seen on this
+        phone, because nobody can be asked to type "net.whatsapp.WhatsApp"
+        from memory.
+        """
+        card = Card("Notification rules", "check")
+
+        note = label(
+            "Filtered notifications are still recorded - they just do not "
+            "raise a banner. Calls are never filtered.",
+            11, QFont.Normal, theme.TEXT_DIM)
+        note.setWordWrap(True)
+        card.body.addWidget(note)
+
+        # --- history -------------------------------------------------- #
+        self.switch_history = Switch()
+        self.switch_history.setChecked(bool(prefs.get("save_history")))
+        self.switch_history.toggled.connect(
+            lambda on: self._save("save_history", bool(on)))
+        card.body.addWidget(SettingRow(
+            "clock", "Save notification history",
+            "Keep the last 10,000 notifications between restarts",
+            self.switch_history))
+
+        # --- quiet hours ---------------------------------------------- #
+        self.switch_quiet = Switch()
+        self.switch_quiet.setChecked(bool(prefs.get("quiet_enabled")))
+        self.switch_quiet.toggled.connect(
+            lambda on: self._save("quiet_enabled", bool(on)))
+        card.body.addWidget(SettingRow(
+            "bell", "Quiet hours",
+            "Silence banners overnight - priority apps still get through",
+            self.switch_quiet))
+
+        times = QHBoxLayout()
+        times.setSpacing(8)
+        times.addWidget(label("From", 12, QFont.Normal, theme.TEXT_DIM))
+        self.quiet_start = self._time_box("quiet_start")
+        times.addWidget(self.quiet_start)
+        times.addWidget(label("to", 12, QFont.Normal, theme.TEXT_DIM))
+        self.quiet_end = self._time_box("quiet_end")
+        times.addWidget(self.quiet_end)
+        times.addStretch(1)
+        card.body.addLayout(times)
+
+        return self._rules_filters(card)
+
+    def _time_box(self, key: str) -> QComboBox:
+        """Half-hour picker. A combo, not free text, so the stored value is
+        always parseable and rules.py never has to fall back."""
+        box = QComboBox()
+        box.setObjectName("pill")
+        box.setCursor(Qt.PointingHandCursor)
+        choices = ["%02d:%02d" % (h, m)
+                   for h in range(24) for m in (0, 30)]
+        box.addItems(choices)
+        current = prefs.get(key) or ("22:00" if "start" in key else "07:00")
+        if current in choices:
+            box.setCurrentText(current)
+        box.currentTextChanged.connect(
+            lambda text: self._save(key, text))
+        return box
+
+    def _rules_filters(self, card: Card) -> Card:
+        """App filter, priority apps and keyword rules. Split out of
+        _card_rules purely to keep either method readable."""
+        # --- app filter mode ------------------------------------------ #
+        self.filter_mode = QComboBox()
+        self.filter_mode.setObjectName("pill")
+        self.filter_mode.setCursor(Qt.PointingHandCursor)
+        self._filter_modes = ["off", "blocklist", "allowlist"]
+        self.filter_mode.addItems(["Show all apps",
+                                   "Silence the apps I pick",
+                                   "Only the apps I pick"])
+        mode = prefs.get("app_filter_mode") or "off"
+        if mode in self._filter_modes:
+            self.filter_mode.setCurrentIndex(self._filter_modes.index(mode))
+        self.filter_mode.currentIndexChanged.connect(self._set_filter_mode)
+        card.body.addWidget(SettingRow(
+            "bell", "App filter", "Which apps may raise a banner",
+            self.filter_mode))
+
+        self.app_picker = self._app_list(self._filter_key(), "app_picker")
+        card.body.addWidget(self.app_picker)
+
+        # --- priority apps -------------------------------------------- #
+        card.body.addWidget(label(
+            "Priority apps  \u00b7  these ignore quiet hours",
+            12, QFont.DemiBold, theme.TEXT))
+        self.priority_picker = self._app_list("priority_apps",
+                                              "priority_picker")
+        card.body.addWidget(self.priority_picker)
+
+        # --- keyword rules -------------------------------------------- #
+        card.body.addWidget(label(
+            "Word rules  \u00b7  first match wins",
+            12, QFont.DemiBold, theme.TEXT))
+        hint = label(
+            "Matches anywhere in the title or body, ignoring case. Plain "
+            "words, not patterns.", 11, QFont.Normal, theme.TEXT_DIM)
+        hint.setWordWrap(True)
+        card.body.addWidget(hint)
+
+        entry = QHBoxLayout()
+        entry.setSpacing(8)
+        self.rule_word = QLineEdit()
+        self.rule_word.setPlaceholderText("word or phrase, e.g. sale")
+        entry.addWidget(self.rule_word, 1)
+        self.rule_action = QComboBox()
+        self.rule_action.setObjectName("pill")
+        self._rule_actions = ["silent", "drop", "show"]
+        self.rule_action.addItems(["Silence it", "Discard it", "Always show"])
+        entry.addWidget(self.rule_action)
+        add = QPushButton("Add")
+        add.setObjectName("pill")
+        add.setCursor(Qt.PointingHandCursor)
+        add.clicked.connect(self._add_rule)
+        entry.addWidget(add)
+        card.body.addLayout(entry)
+
+        self.rule_list = QListWidget()
+        self.rule_list.setObjectName("ruleList")
+        self.rule_list.setMaximumHeight(120)
+        self.rule_list.itemDoubleClicked.connect(self._remove_rule)
+        card.body.addWidget(self.rule_list)
+        card.body.addWidget(label(
+            "Double-click a rule to remove it.",
+            11, QFont.Normal, theme.TEXT_FAINT))
+        self._refresh_rules()
+        return card
+
+    def _filter_key(self) -> str:
+        mode = prefs.get("app_filter_mode") or "off"
+        return "app_allowlist" if mode == "allowlist" else "app_blocklist"
+
+    def _app_list(self, key: str, name: str) -> QListWidget:
+        """
+        A checkable list of apps actually seen on this phone.
+
+        Built from FEED.apps() rather than a hand-typed bundle id. Any
+        bundle already stored in the pref but not yet seen is added too, so
+        a setting made before history existed is never silently discarded.
+        """
+        widget = QListWidget()
+        widget.setObjectName(name)
+        widget.setMaximumHeight(130)
+        seen = FEED.apps()
+        chosen = list(prefs.get(key) or [])
+        known = {entry["bundle_id"] for entry in seen}
+        for bundle in chosen:
+            if bundle and bundle not in known:
+                seen.append({"bundle_id": bundle, "app": bundle, "count": 0})
+        if not seen:
+            widget.addItem(QListWidgetItem(
+                "No apps seen yet - notifications will populate this"))
+            widget.setEnabled(False)
+            return widget
+        for entry in seen:
+            text = entry["app"] or entry["bundle_id"]
+            if entry.get("count"):
+                text += "   (%d)" % entry["count"]
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, entry["bundle_id"])
+            item.setCheckState(Qt.Checked if entry["bundle_id"] in chosen
+                               else Qt.Unchecked)
+            widget.addItem(item)
+        widget.itemChanged.connect(lambda _i, k=key, w=widget:
+                                   self._save_app_list(k, w))
+        # Recorded so _set_filter_mode knows there is something to
+        # disconnect. Only the app_picker is ever re-pointed; the priority
+        # list keeps its original key for life.
+        if name == "app_picker":
+            self._picker_connected = True
+        return widget
+
+    def _save_app_list(self, key: str, widget: QListWidget) -> None:
+        chosen = []
+        for row in range(widget.count()):
+            item = widget.item(row)
+            if item.checkState() == Qt.Checked:
+                chosen.append(item.data(Qt.UserRole))
+        self._save(key, [b for b in chosen if b])
+
+    def _set_filter_mode(self, index: int) -> None:
+        """
+        Switching mode also repoints the picker at the other list.
+
+        Allow-list and block-list are stored separately on purpose: flipping
+        between them should not silently reinterpret "apps I silenced" as
+        "the only apps allowed", which would be the opposite of the intent.
+        """
+        mode = self._filter_modes[index] if 0 <= index < 3 else "off"
+        self._save("app_filter_mode", mode)
+        key = self._filter_key()
+        chosen = set(prefs.get(key) or [])
+        self.app_picker.blockSignals(True)
+        for row in range(self.app_picker.count()):
+            item = self.app_picker.item(row)
+            bundle = item.data(Qt.UserRole)
+            if bundle is None:
+                continue
+            item.setCheckState(Qt.Checked if bundle in chosen
+                               else Qt.Unchecked)
+        self.app_picker.blockSignals(False)
+        # Tracked rather than guarded by try/except: libpyside emits a
+        # RuntimeWarning for a disconnect with nothing attached instead of
+        # raising, so the exception handler never fired and the warning
+        # still reached the log on every mode change.
+        if getattr(self, "_picker_connected", False):
+            self.app_picker.itemChanged.disconnect()
+            self._picker_connected = False
+        usable = (self.app_picker.count() > 0
+                  and self.app_picker.item(0).data(Qt.UserRole) is not None)
+        if usable:
+            self.app_picker.itemChanged.connect(
+                lambda _i, k=key, w=self.app_picker: self._save_app_list(k, w))
+            self._picker_connected = True
+        self.app_picker.setEnabled(mode != "off" and usable)
+
+    def _add_rule(self) -> None:
+        word = (self.rule_word.text() or "").strip()
+        if not word:
+            return
+        action = self._rule_actions[max(0, self.rule_action.currentIndex())]
+        rules_list = list(prefs.get("keyword_rules") or [])
+        rules_list.append({"pattern": word, "action": action})
+        self._save("keyword_rules", rules_list)
+        self.rule_word.clear()
+        self._refresh_rules()
+
+    def _remove_rule(self, item: QListWidgetItem) -> None:
+        index = self.rule_list.row(item)
+        rules_list = list(prefs.get("keyword_rules") or [])
+        if 0 <= index < len(rules_list):
+            rules_list.pop(index)
+            self._save("keyword_rules", rules_list)
+            self._refresh_rules()
+
+    def _refresh_rules(self) -> None:
+        wording = {"silent": "silence", "drop": "discard", "show": "show"}
+        self.rule_list.clear()
+        for rule in prefs.get("keyword_rules") or []:
+            if not isinstance(rule, dict):
+                continue
+            self.rule_list.addItem(QListWidgetItem(
+                '"%s"   \u2192   %s' % (rule.get("pattern", ""),
+                                        wording.get(rule.get("action"),
+                                                    rule.get("action", "")))))
+
     def _card_devices(self) -> Card:
         """
         Pick which phone to bridge.
@@ -900,7 +1448,7 @@ class Dashboard(QMainWindow):
         chooses which bonded device to connect to, which matters if you have
         more than one iPhone, or after iOS rotates its address.
         """
-        card = Card("Devices")
+        card = Card("Devices", image="mobile")
         note = label(
             "Pair the phone in Windows Bluetooth settings first, then scan "
             "here and pick it. Scanning briefly shares the radio, so the "
@@ -974,7 +1522,7 @@ class Dashboard(QMainWindow):
             theme.TEXT_DIM))
 
     def _card_appearance(self) -> Card:
-        card = Card("Appearance")
+        card = Card("Appearance", "settings")
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(50, 100)
         self.opacity_slider.setFixedWidth(200)
@@ -988,14 +1536,68 @@ class Dashboard(QMainWindow):
             "How solid desktop banners look", self.opacity_slider)
         card.body.addWidget(self.opacity_row)
 
-        theme_row = SettingRow(
-            "settings", "Theme", "Dark only for now",
-            label("Dark", 12, QFont.DemiBold, theme.TEXT_DIM))
-        card.body.addWidget(theme_row)
+        self.theme_box = QComboBox()
+        self.theme_box.setObjectName("pill")
+        self.theme_box.setCursor(Qt.PointingHandCursor)
+        self._theme_modes = ["dark", "light"]
+        self.theme_box.addItems(["Dark", "Light"])
+        current = (prefs.get("theme_mode") or "dark").lower()
+        if current in self._theme_modes:
+            self.theme_box.setCurrentIndex(self._theme_modes.index(current))
+        self.theme_box.currentIndexChanged.connect(self._set_theme)
+        card.body.addWidget(SettingRow(
+            "settings", "Theme",
+            "Banners stay dark in both - they sit over other windows",
+            self.theme_box))
         return card
 
+    def _save(self, key: str, value) -> bool:
+        """
+        Write one preference and confirm it on screen.
+
+        Every Settings control goes through here rather than calling
+        prefs.set directly, so the confirmation cannot drift out of step
+        with what was actually written - and so a failed write is reported
+        instead of looking identical to a successful one.
+        """
+        saved = prefs.set(key, value)
+        notice = getattr(self, "save_notice", None)
+        if notice is not None:
+            notice.flash(saved)
+        if not saved:
+            applog.log(f"could not save {key!r}", "ui")
+        return saved
+
+    def _set_theme(self, index: int) -> None:
+        """
+        Switch palette live.
+
+        Re-applying the app stylesheet repaints everything QSS drives. Rows
+        built with an inline setStyleSheet (the feed and call lists) captured
+        their hover colour at construction, so the cached signatures are
+        cleared to force a rebuild on the next refresh tick rather than
+        leaving half the window in the old palette until something changes.
+        """
+        mode = self._theme_modes[index] if 0 <= index < 2 else "dark"
+        self._save("theme_mode", mode)
+        theme.apply_mode(mode)
+
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(theme.sheet())
+        # Labels carry their colour in their own stylesheet, so the app
+        # sheet alone does not reach them - without this, every label keeps
+        # the previous palette's colour and half of them go invisible.
+        restyle_labels()
+        restyle_images()
+        self._feed_signature = None
+        self._call_signature = None
+        self._refresh_lists()
+        self.refresh()
+        applog.log("theme switched to %s" % mode, "app")
+
     def _set_opacity(self, value: int) -> None:
-        prefs.set("toast_opacity", value / 100)
+        self._save("toast_opacity", value / 100)
         from qt_toast import MANAGER
         MANAGER.apply_opacity()
 
@@ -1005,7 +1607,7 @@ class Dashboard(QMainWindow):
         both, so linking an account is optional polish rather than a
         requirement - everything still works over Bluetooth alone.
         """
-        card = Card("Spotify")
+        card = Card("Spotify", "music", theme.GREEN)
         card.header.insertWidget(0, icon_label("spotify", 18, theme.GREEN))
 
         note = label(
@@ -1062,6 +1664,24 @@ class Dashboard(QMainWindow):
             self.switch_startup.blockSignals(True)
             self.switch_startup.setChecked(actual)
             self.switch_startup.blockSignals(False)
+
+    def _toggle_desktop(self, checked: bool) -> None:
+        """
+        Same honesty as _toggle_startup: if the shortcut could not be
+        written - a locked Desktop, or OneDrive mid-sync - the switch snaps
+        back rather than claiming something that is not there.
+        """
+        actual = desktop.set_enabled(checked)
+        if actual != checked:
+            self.switch_desktop.blockSignals(True)
+            self.switch_desktop.setChecked(actual)
+            self.switch_desktop.blockSignals(False)
+            self.desktop_row.set_caption(
+                "Could not write to %s" % desktop.folder())
+        else:
+            self.desktop_row.set_caption(
+                "Shortcut is on your desktop" if actual
+                else "Put a shortcut to this app on your desktop")
 
     def _toggle_banners(self, checked: bool) -> None:
         from status import STATUS
@@ -1183,6 +1803,8 @@ class Dashboard(QMainWindow):
         self.hero_rows["model"].set_value(device["model"])
         self.hero_rows["bluetooth"].value.setText(
             "Connected" if connected else "Disconnected")
+        self.hero_pill_state.set_state(
+            connected, "Connected" if connected else "Disconnected")
         self.hero_rows["bluetooth"].caption.setText(device["address"] or "")
 
         for key, value in (("name", device["name"]), ("model", device["model"]),
@@ -1198,9 +1820,17 @@ class Dashboard(QMainWindow):
             else device["name"])
         self.device_current.set_value(device["address"] or "not chosen yet")
 
-        self.log_label.setText("\n".join(
-            f"{time.strftime('%H:%M:%S', time.localtime(at))}  {tag:<5} {msg}"
-            for at, tag, msg in applog.recent(16)))
+        self.device_title.setText(device["name"] or "iPhone")
+        self.device_model.setText(device["model"] or "")
+        self.device_seen.setText(
+            "Last seen %s" % ago(device["last_seen"])
+            if device["last_seen"] else "")
+
+        # The activity log is rebuilt only when the feed actually changed,
+        # since it recreates its rows and refresh() runs every second.
+        if self._activity_signature != self._feed_signature:
+            self._activity_signature = self._feed_signature
+            self._fill_activity()
 
         self._refresh_media(media)
         self._refresh_call(call)
@@ -1260,9 +1890,13 @@ class Dashboard(QMainWindow):
         for widget in (self.np_total, self.media_total):
             widget.setText(_mmss(media["duration"]) if playing else "0:00")
 
+        # The chip names the player; the waveform runs only while playing.
+        self.media_source.set_source(media.get("player") or "")
+        self.media_wave.set_active(bool(media["playing"]))
+
         glyph = "pause" if media["playing"] else "play"
-        self.np_play.setIcon(vicons.icon(glyph, 22, theme.BG))
-        self.media_play.setIcon(vicons.icon(glyph, 22, theme.BG))
+        self.np_play.setIcon(vicons.icon(glyph, 22, theme.ACCENT))
+        self.media_play.setIcon(vicons.icon(glyph, 22, theme.ACCENT))
 
         # album art, which only Spotify can give us
         art = QPixmap(media["art_path"]) if media["art_path"] else None
@@ -1317,7 +1951,11 @@ class Dashboard(QMainWindow):
             self.lyrics_source.setText("LRCLIB \u00b7 unsynced")
 
     def _refresh_call(self, call) -> None:
-        if call["state"] in ("active", "ringing"):
+        live = call["state"] in ("active", "ringing")
+        # The waveform animates only while a call is live; see its docstring
+        # for why it is decorative rather than a level meter.
+        self.call_wave.set_active(live)
+        if live:
             self.call_who.setText(call["who"])
             self.call_art.set_art(None, "phone", call["who"], theme.GREEN)
             if call["state"] == "active":
@@ -1333,21 +1971,68 @@ class Dashboard(QMainWindow):
             self.call_state.setText("Calls appear here while they are running")
             self.call_art.set_art(None, "phone")
 
+    def _on_search(self, _text: str = "") -> None:
+        """Re-run immediately; SQLite over 10k short rows is well inside a
+        frame, so debouncing would only add latency."""
+        self._fill_all_list()
+
+    def _fill_all_list(self) -> None:
+        """
+        The Notifications page list.
+
+        With an empty box this mirrors the live feed. With a query it goes
+        to the database instead, so results reach the whole retained
+        history rather than the 120 items the deque happens to hold.
+        """
+        query = ""
+        if getattr(self, "search_box", None) is not None:
+            query = (self.search_box.text() or "").strip()
+        name = getattr(self, "notif_filter", "All")
+
+        if query:
+            items = FEED.search(query=query, limit=200)
+        else:
+            items = FEED.recent(120)
+        items = [i for i in items if self._matches_notif_filter(i, name)][:40]
+
+        self.all_empty.setVisible(not items)
+        if query:
+            self.all_empty.set_text(
+                "No matches", 'Nothing in history matches "%s".' % query)
+        elif name != "All":
+            self.all_empty.set_text(
+                "Nothing here", "No %s yet." % name.lower())
+        else:
+            self.all_empty.set_text(
+                "Nothing yet", "Notifications from the phone land here.")
+        # accent=True only on this page: a long unbroken list is where a
+        # per-app colour helps, unlike the three-row Overview cards.
+        self._fill(self.all_box, items, accent=True)
+
     def _refresh_lists(self) -> None:
         """Rebuilt only on change - a full teardown every second flickered."""
         items = FEED.recent(40)
-        signature = (FEED.count(), items[0].at if items else 0)
+        signature = (FEED.count(), items[0].at if items else 0,
+                     self.msg_search.text()
+                     if getattr(self, "msg_search", None) else "")
         if signature != self._feed_signature:
             self._feed_signature = signature
-            messages = [i for i in items if i.bundle_id in MESSAGE_APPS][:14]
+            messages = [i for i in items if i.bundle_id in MESSAGE_APPS]
+            # The Messages page filters further; the Overview card does not,
+            # because a search on one page should not empty a summary on
+            # another.
+            searched = [i for i in messages
+                        if self._matches_msg_search(i)][:14]
+            messages = messages[:14]
             self.feed_empty.setVisible(not items)
-            self.all_empty.setVisible(not items)
-            self.messages_empty.setVisible(not messages)
+            self.messages_empty.setVisible(not searched)
             self.messages_dash_empty.setVisible(not messages)
             self._fill(self.feed_box, items[:3])
-            self._fill(self.all_box, items[:24])
-            self._fill(self.messages_box, messages)
+            self._fill(self.messages_box, searched)
             self._fill(self.messages_dash_box, messages[:3])
+            # The Notifications page has its own source, because a search
+            # must not be wiped out by the next arriving notification.
+            self._fill_all_list()
 
         history = calls.TRACKER.recent(20)
         if self._call_filter == "Missed":
@@ -1356,8 +2041,13 @@ class Dashboard(QMainWindow):
             history = [c for c in history if c.direction == "incoming"]
         elif self._call_filter == "Outgoing":
             history = [c for c in history if c.direction == "outgoing"]
+        # Search applies after the filter, so "Missed" plus a name narrows
+        # rather than replacing one with the other.
+        history = [c for c in history if self._matches_call_search(c)]
 
         call_signature = (self._call_filter,
+                          (self.call_search.text()
+                           if getattr(self, "call_search", None) else ""),
                           tuple((c.uid, c.state, int(c.duration))
                                 for c in history))
         if call_signature != self._call_signature:
@@ -1377,17 +2067,18 @@ class Dashboard(QMainWindow):
             if child.widget():
                 child.widget().setParent(None)
 
-    def _fill(self, box, items) -> None:
+    def _fill(self, box, items, accent: bool = False) -> None:
         self._clear(box)
         for item in items:
-            box.addWidget(FeedRow(item, _pixmap_for(item.bundle_id, item.app)))
+            box.addWidget(FeedRow(item, _pixmap_for(item.bundle_id, item.app),
+                                  accent=accent))
 
     def _call_row(self, call) -> QFrame:
         row = QFrame()
         row.setFixedHeight(58)
-        row.setStyleSheet(
-            "QFrame { background: transparent; border-radius: 10px; }"
-            f"QFrame:hover {{ background: {theme.CARD_HOVER}; }}")
+        # Object name, not an inline stylesheet: inline bakes the palette in
+        # at construction and survives a theme switch unchanged.
+        row.setObjectName("callRow")
         layout = QHBoxLayout(row)
         layout.setContentsMargins(8, 6, 10, 6)
         layout.setSpacing(13)

@@ -1,5 +1,5 @@
 ﻿# ============================================================
-#  Master .gitignore  (Arjun / F:\Projects GitHub prep)
+#  .gitignore for iPhone Companion
 #  Safe default for Python / Node / .NET / ESPHome / hardware
 # ============================================================
 
@@ -88,6 +88,9 @@ probe-*.txt
 spotify.json
 lyrics.json
 prefs.json
+feed.db
+feed.db-wal
+feed.db-shm
 art/
 dist/
 build/
@@ -97,6 +100,7 @@ docs/
 _*.py
 _*.txt
 _*.png
+smoke_out.txt
 
 # ---- OS / editor cruft ----
 .DS_Store
